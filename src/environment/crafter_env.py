@@ -14,7 +14,7 @@ class CrafterEnvWrapper(gym.Env):
             cfg (EnvConfig): The environment configuration object.
         """
         # Original Crafter env has a distinct API
-        self._env = crafter.Env(size=cfg.img_size, seed=cfg.seed)
+        self._env = crafter.Env(size=cfg.image_size, seed=cfg.seed)
 
         # Define observation and action spaces according to Gymansium standards
         self.observation_space = gym.spaces.Box(
