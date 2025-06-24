@@ -7,7 +7,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.1.0",
-    "torchvision>=.22.1",
+    "torchvision>=0.22.1",
     "crafter",
     "gymnasium",
     # Utilities
