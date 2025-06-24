@@ -4,7 +4,7 @@ from tqdm import tqdm
 from src.configs.base_config  import get_base_config
 from src.environment.crafter_env import CrafterEnvWrapper
 
-def run_random_demo():
+def run_random_agent_demo():
     """Runs a simple demonstration with a random agent in the Crafter environment."""
     print("Starting a random agent demonstration...")
 
@@ -68,4 +68,4 @@ if __name__ == "__main__":
     config = get_base_config()
     os.makedirs(config.experiment_dir, exist_ok=True)
 
-    run_random_demo()
+    run_random_agent_demo()

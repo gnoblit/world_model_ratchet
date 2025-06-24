@@ -73,5 +73,5 @@ class CrafterEnvWrapper(gym.Env):
         return self._env.render()
     
     def close(self):
-        """Closes the environment."""
-        self._env.close()
+        """Crafter lacks a close so just passes."""
+        pass
