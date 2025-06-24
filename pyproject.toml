@@ -32,3 +32,12 @@ select = ["E", "F", "W", "I"]
 [tool.ruff.format]
 # Optional: formatter configuration
 quote-style = "double"
+
+[tool.pytest.ini_options]
+# Tell pytest that the 'src' directory is the root for our python packages.
+# This adds 'src/' to the PYTHONPATH.
+pythonpath = ["src"]
+
+# Tell pytest to specifically look for tests in the 'tests' directory.
+testpaths = ["tests"]
+
