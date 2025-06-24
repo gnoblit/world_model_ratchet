@@ -19,6 +19,12 @@ class PerceptionConfig:
     code_dim: int = 256
 
 @dataclass
+class ActionConfig:
+    """Configuration for the Action Agent."""
+    num_actions: int = 17 # For Crafter
+    hidden_dim: int = 256
+    
+@dataclass
 class MainConfig:
     """Main configuration for the project."""
     project_name: str = "world_model_ratchet"
@@ -28,6 +34,8 @@ class MainConfig:
 
     # Perception 
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
+    # ActionAgent
+    action: ActionConfig = field(default_factory=ActionConfig)
 
 def get_base_config():
     return MainConfig()
