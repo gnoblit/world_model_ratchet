@@ -28,3 +28,7 @@ experiments/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# Text
+future_ideas.md
+idea.md
