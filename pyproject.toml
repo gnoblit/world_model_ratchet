@@ -1,0 +1,32 @@
+[project]
+name = "world-model-ratchet"
+version = "0.1.0"
+description = "An experiment in inducing compositional world models via Iterated Learning."
+authors = [{name = "Graham Alexander Noblit, Ph.D."}, {email = "grahamnoblit@pm.me"}]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.1.0",
+    "crafter",
+    "gymnasium",
+    # Utilities
+    "numpy",
+    "omegaconf",         # Configs
+    "tqdm",                  # Progress bars
+    "imageio",              # Gif/Video evaluations
+    "matplotlib",          # Plotting visualizations
+    "tensorboard",       # Logging Metrics
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff", # A very fast Python linter and formatter
+]
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.format]
+# Optional: formatter configuration
+quote-style = "double"

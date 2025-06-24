@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+.direnv
+.envrc
+pip-log.txt
+pip-delete-this-directory.txt
+*.lock
+*.egg-info
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data and logs
+experiments/
+*.log
+*.db
+*.sqlite3
+
+# OS-specific
+.DS_Store
+Thumbs.db
