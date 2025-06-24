@@ -40,4 +40,3 @@ pythonpath = ["src"]
 
 # Tell pytest to specifically look for tests in the 'tests' directory.
 testpaths = ["tests"]
-
