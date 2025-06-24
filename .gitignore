@@ -12,6 +12,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 *.lock
 *.egg-info
+test.py
 
 # IDE / Editor
 .idea/
