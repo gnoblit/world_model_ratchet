@@ -78,7 +78,3 @@ def test_action_agent():
         return
         
     print("\n--- ActionAgent Test Complete: All checks passed! ---")
-
-
-if __name__ == "__main__":
-    test_action_agent()
