@@ -122,3 +122,61 @@ class SharedCodebook(nn.Module):
         # Shape: (batch_size, code_dim)
 
         return final_representation
+    
+    class PerceptionAgent(nn.Module):
+        """
+        The complete "Teacher" module. It combines the VisionEncoder and the
+        SharedCodebook to process raw observations into a final, structured
+        representation.
+        """
+        def __init__(self, cfg):
+            """
+            Initializes the PerceptionAgent.
+
+            We will pass a configureation object to keep the parameters organized.
+            
+            Args:
+                cfg (ModelConfig): A configuration object containing the model hyperparameters.
+            """
+            super().__init__()
+
+            # We will expect the config to have:
+            # cfg.perception.feature_dim
+            # cfg.perception.num_codes
+            # cfg.perception.code_dim
+
+            # Feature dimension of the encoder's output must
+            # match the code dim of the codebook's input/output
+
+            if cfg.feature_dim != cfg. code_dim:
+                raise ValueError("""
+                                 VisionEncoder's feature dim must match SharedCodebook's code_dim.
+                                 Check config.
+                                 """)
+            self.encoder = VisionEncoder(
+                feature_dim=cfg.feature_dim,
+            )
+            self.codebook = SharedCodebook(
+                num_codes=cfg.num_codes,
+                code_dim=cfg.code_dim,
+            )
+
+        def forward(self, obs: torch.Tensor) -> torch.Tensor:
+            """
+            The full forward pass from pixels to structured representation.
+            
+            Args:
+                obs (torch.Tensor): A batch of image observations.
+                                             Shape: (batch_size, channels, height, width)
+                
+            Returns:
+                torch.Tensor: The final representation `z_t` from the codebook. 
+                                    Shape: (batch_size, code_dim)
+            """
+
+            # 1. Encode the raw pixes into a continuous feature vector
+            features = self.encoder(obs)
+            # 2. Map the continuous features to a sparse combination of discrete codes
+            representation = self.codebook(features)
+
+            return representation
