@@ -30,7 +30,15 @@ class WorldModelConfig:
     hidden_dim: int = 512
     # The dimension for the learnable action embeddings
     action_embedding_dim: int = 32
-    
+
+@dataclass
+class ReplayBufferConfig:
+    """Configuration for the Replay Buffer."""
+    # Maximum number of transitions to store across all episodes
+    capacity: int = 1_000_000
+    # The length of the sequences (trajectories) to sample
+    sequence_length: int = 50
+
 @dataclass
 class MainConfig:
     """Main configuration for the project."""
@@ -45,6 +53,8 @@ class MainConfig:
     action: ActionConfig = field(default_factory=ActionConfig)
     # WorldModel
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
+    # ReplayBuffer
+    replay_buffer: ReplayBufferConfig = field(default_factory=ReplayBufferConfig)
 
 def get_base_config():
     return MainConfig()
