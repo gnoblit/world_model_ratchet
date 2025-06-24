@@ -7,17 +7,20 @@ class ActionAgent(nn.Module):
     The "Student" or policy network.
     It takes a state representation and outputs a policy (a distribution over actions).
     """
-    def __init__(self, state_dim: int, num_actions: int, hidden_dim: int = 256):
+    def __init__(self, state_dim: int, cfg):
         """
         Initializes the ActionAgent.
 
         Args:
             state_dim (int): The dimensionality of the input state representation, `z_t`.
                                           Must match the output dim of the PerceptionAgent.
-            num_actions (int): The number of discrete actions available in the environment.
-            hidden_dim (int): The size of the hidden layers in the MLP. 
+            cfg (ActionConfig): The configuration object for the action agent.
         """
         super().__init__()
+
+        # Unpack values from the config object
+        num_actions = cfg.num_actions
+        hidden_dim = cfg.hidden_dim
 
         self.network = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),

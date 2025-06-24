@@ -9,7 +9,7 @@ def test_action_agent_initialization():
     try:
         agent = ActionAgent(
             state_dim=config.perception.code_dim,
-            num_actions=config.action.num_actions,
+            cfg=config.action,
         )
         assert agent is not None, "Agent should exist after init."
     except Exception as e:
@@ -20,7 +20,7 @@ def test_action_agent_forward_pass():
     config = get_base_config()
     agent = ActionAgent(
         state_dim=config.perception.code_dim,
-        num_actions=config.action.num_actions,
+        cfg=config.action,
     )
     batch_size = 4
     dummy_state_batch = torch.randn(batch_size, config.perception.code_dim)
@@ -37,7 +37,7 @@ def test_action_agent_get_action():
     config = get_base_config()
     agent = ActionAgent(
         state_dim=config.perception.code_dim, 
-        num_actions=config.action.num_actions
+        cfg=config.action,
     )
     
     dummy_single_state = torch.randn(1, config.perception.code_dim)
