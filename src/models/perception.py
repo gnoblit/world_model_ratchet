@@ -1,6 +1,64 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import models
+
+class VisionEncoder(nn.Module):
+    """
+    A CNN that takes an image observation and encodes it into a flat feature vector.
+    Uses a pre-defined architecture from torchvision (e.g., ResNet-18) and adapts it.
+    """
+    def __init__(self, feature_dim: int, pretrained: bool=False):
+        """
+        Initializes the VisionEncoder.
+        
+        Args:
+            feature_dim (int): The desired dimensionality of the output feature vector.
+                                        This must match the code_dim of the SharedCodebook.
+            pretrained (bool): Whether to use pre-trained weights from ImageNet.
+                                        Should be False for our task, as we learn from scratch.
+        """
+
+        super().__init__()
+
+        # 1. Load model from torchvision
+        # Use weights=None for random initialization
+        resnet = models.resnet18(weights=None if not pretrained else models.ResNet18_Weights.DEFAULT)
+
+        # 2. Isolate feature extraction layers
+        # Take all but final classification layer, which we drop
+        modules = list(resnet.children())[:-1]
+        self.feature_extractor = nn.Sequential(*modules)
+
+        # 3. Create a new head to project the features to our desired dimension
+        in_features = resnet.fc.in_features
+        self.head = nn.Linear(in_features, feature_dim)
+
+        self.feature_dim = feature_dim
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Processes a batch of image observations.
+        
+        Args:
+            obs (torch.Tensor): A batch of image tensors.
+                                          Shape: (batch_size, channels, heigh, width)
+
+        Returns:
+            torch.Tensor: A batch of flat feature vectors.
+                                 Shape: (batch_size, feature_dim)                                          
+        """
+        # Pass through feature extractor
+        features = self.feature_extractor(obs)
+
+        # Flatten to be 1D vector per image
+        features_flat = torch.flatten(features, 1)
+
+        # Project to the final feature dimension
+        output_features = self.head(features_flat)
+
+        return output_features
+
 
 class SharedCodebook(nn.Module):
     """
