@@ -23,6 +23,13 @@ class ActionConfig:
     """Configuration for the Action Agent."""
     num_actions: int = 17 # For Crafter
     hidden_dim: int = 256
+
+@dataclass
+class WorldModelConfig:
+    """Configuration for the World Model."""
+    hidden_dim: int = 512
+    # The dimension for the learnable action embeddings
+    action_embedding_dim: int = 32
     
 @dataclass
 class MainConfig:
@@ -36,6 +43,8 @@ class MainConfig:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     # ActionAgent
     action: ActionConfig = field(default_factory=ActionConfig)
+    # WorldModel
+    world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
 
 def get_base_config():
     return MainConfig()
