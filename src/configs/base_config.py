@@ -67,6 +67,8 @@ class TrainingConfig:
     critic_loss_coef: float = 0.5
     # Coefficient for the entropy bonus to encourage exploration
     entropy_coef: float = 0.01
+    # Gradient clipping
+    max_grad_norm: float = 0.5
 
 @dataclass
 class ILConfig:
