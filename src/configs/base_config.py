@@ -69,6 +69,17 @@ class TrainingConfig:
     entropy_coef: float = 0.01
 
 @dataclass
+class ILConfig:
+    """Configuration for the Iterated Learning process."""
+    num_generations: int = 10
+    # Steps for the initial warmup before the first generational shift
+    warmup_steps: int = 50_000
+    # Steps for the student to learn from a frozen teacher
+    distill_steps: int = 10_000
+    # Steps for the student and teacher to co-evolve
+    interact_steps: int = 40_000
+
+@dataclass
 class MainConfig:
     """Main configuration for the project."""
     project_name: str = "world_model_ratchet"
@@ -86,6 +97,8 @@ class MainConfig:
     replay_buffer: ReplayBufferConfig = field(default_factory=ReplayBufferConfig)
     # TrainingConfig
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    # IteratedLearnerConfig
+    il: ILConfig = field(default_factory=ILConfig)
 
 def get_base_config():
     return MainConfig()
