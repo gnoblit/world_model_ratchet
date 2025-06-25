@@ -76,17 +76,21 @@ class TrainingConfig:
     commitment_loss_coef: float = 0.25 # Beta value to weight the commitment loss
     # Codebook usage loss coefficient to encourage diversity
     code_usage_loss_coef: float = 0.1
+    # Momentum rate for updating the target network in JEPA
+    target_update_rate: float = 0.995
 
 @dataclass
 class ILConfig:
     """Configuration for the Iterated Learning process."""
     num_generations: int = 10
-    # Steps for the initial warmup before the first generational shift
+    # Steps for the initial warmup (Generation 0)
     warmup_steps: int = 50_000
-    # Steps for the student to learn from a frozen teacher
-    distill_steps: int = 10_000
-    # Steps for the student and teacher to co-evolve
-    interact_steps: int = 40_000
+    # Steps for the student to learn from a frozen teacher in each generation
+    student_steps: int = 50_000
+    # Steps of experience to collect with the new student policy for teacher refinement
+    teacher_refinement_collect_steps: int = 10_000
+    # Number of training updates to perform on the teacher model using the collected data
+    teacher_refinement_updates: int = 10_000
 
 @dataclass
 class MainConfig:

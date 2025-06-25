@@ -102,51 +102,51 @@ class SharedCodebook(nn.Module):
                 f"codebook dimension ({self.code_dim})"
             )
         
-        # Shape: (num_codes, code_dim)
         codes = self.embedding.weight
+        batch_size = features.shape[0]
         
-        # Normalize features and codes for cosine similarity calculation
-        features_norm = F.normalize(features, p=2, dim=-1)       # Shape: (batch_size, code_dim)
-        codes_norm = F.normalize(codes, p=2, dim=-1)              # Shape: (num_codes, code_dim)
+        # --- Hard Vector Quantization ---
+        # Calculate the L2 squared distance between each feature and all codes
+        # (a-b)^2 = a^2 - 2ab + b^2
+        distances = (
+            torch.sum(features**2, dim=1, keepdim=True)
+            + torch.sum(codes**2, dim=1)
+            - 2 * torch.matmul(features, codes.t())
+        ) # Shape: (batch_size, num_codes)
 
-        # Calculate cosine similarity between each feature and all codes
-        # Matrix multiplication: (B, D) @ (D, C) -> (B, C)
-        similarity_scores = torch.matmul(features_norm, codes_norm.T)
-        # Shape: (batch_size, num_codes)
+        # Find the index of the closest codebook vector for each feature vector
+        closest_code_indices = torch.argmin(distances, dim=1) # Shape: (batch_size,)
 
-        # Get weights
-        weights = F.softmax(similarity_scores, dim=-1)
-
-        # Calculate final representation as weighted sum of the original non_normalized codes
-        # Matmul: (B, C) @ (C, D) -> (B, D)
-        final_representation = torch.matmul(weights, codes)
-        # Shape: (batch_size, code_dim)
+        # The quantized representation is the selected codebook vector
+        quantized_features = self.embedding(closest_code_indices)
         
         # --- Calculate Loss Terms ---
 
-        # We need the chosen code vectors to calculate the commitment loss.
-        # This is a discrete, non-differentiable step, but we use it for a loss term.
-        closest_code_indices = torch.argmax(similarity_scores, dim=-1)
-        quantized_features = self.embedding(closest_code_indices)
-
-        # The commitment loss encourages the encoder's output (features)
-        # to be "committed" to the chosen code vector.
+        # 1. Commitment Loss: Encourages the encoder's output (features) to be
+        # "committed" to the chosen code vector.
         # We stop the gradient on the quantized features so the encoder is pulled
         # towards the codes, not the other way around.
         commitment_loss = F.mse_loss(features, quantized_features.detach())
         
-        # We can also add a loss to encourage diverse use of the codebook vectors.
-        # Maximizing the entropy of the average code usage across the batch prevents
-        # the model from collapsing to using only a few codes.
-        avg_code_usage = torch.mean(weights, dim=0) # Average probabilities across batch
-        code_entropy = -torch.sum(avg_code_usage * torch.log(avg_code_usage + 1e-8)) # H(p) = -sum(p*log(p))
+        # 2. Codebook Usage Loss (Entropy): Encourages the model to use a diverse
+        # set of codes. We calculate the entropy of the distribution of chosen
+        # codes within the batch.
+        code_counts = torch.zeros(self.num_codes, device=features.device)
+        # Count occurrences of each code index
+        code_counts.scatter_add_(0, closest_code_indices, torch.ones_like(closest_code_indices, dtype=torch.float))
+        # Calculate probabilities
+        code_probs = code_counts / batch_size
+        # Calculate entropy: H(p) = -sum(p * log(p)). Add epsilon for stability.
+        code_entropy = -torch.sum(code_probs * torch.log(code_probs + 1e-8))
+
         # We want to maximize entropy, so we will subtract this term from the main loss.
         # We return it as a positive value to be clear it's an entropy value.
 
         # We also need to allow the gradient to flow back from the final_representation
         # to the encoder. The commitment loss helps the encoder, but the main task
         # gradient still needs to pass through. This is a common trick in VQ-VAEs.
-        final_representation = features + (final_representation - features).detach()
+        # The gradient from `final_representation` will flow back to `features`.
+        final_representation = features + (quantized_features - features).detach()
 
         return final_representation, commitment_loss, code_entropy
     

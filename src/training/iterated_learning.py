@@ -59,15 +59,23 @@ class IteratedLearningManager:
             # --- 1. Generational Shift: Spawn a new student ---
             self.spawn_new_student()
 
-            # --- 2. Distillation Phase ---
-            print(f"Starting distillation for {self.cfg.il.distill_steps} steps...")
-            # Run training with the teacher (perception) frozen
-            self.trainer.train_for_steps(self.cfg.il.distill_steps, teacher_is_frozen=True)
+            # --- 2. Student Training Phase ---
+            print(f"Starting student training for {self.cfg.il.student_steps} steps...")
+            # The student trains by interacting with the env, but the teacher is frozen.
+            self.trainer.train_for_steps(self.cfg.il.student_steps, teacher_is_frozen=True)
 
-            # --- 3. Interaction Phase ---
-            print(f"Starting interaction for {self.cfg.il.interact_steps} steps...")
-            # Run training with all models unfrozen
-            self.trainer.train_for_steps(self.cfg.il.interact_steps, teacher_is_frozen=False)
+            # --- 3. Teacher Refinement Phase ---
+            print("Starting teacher refinement phase...")
+            # a. Collect a new dataset using the converged student policy.
+            #    It's crucial to clear the buffer to only use data from the new policy.
+            print(f"Clearing buffer and collecting {self.cfg.il.teacher_refinement_collect_steps} new steps...")
+            self.trainer.replay_buffer.clear()
+            self.trainer.collect_experience(num_steps=self.cfg.il.teacher_refinement_collect_steps)
+
+            # b. Train the teacher (Perception + WorldModel) on this new data.
+            #    The student is frozen during this phase.
+            print(f"Refining teacher for {self.cfg.il.teacher_refinement_updates} updates...")
+            self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_refinement_updates)
 
         print("\nIterated Learning finished.")
         # Final cleanup

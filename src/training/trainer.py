@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
+import copy
 import torch.optim as optim
 from torch.distributions import Categorical
 
@@ -32,6 +33,12 @@ class Trainer:
         self.world_model = WorldModel(state_dim=state_dim, num_actions=num_actions, cfg=cfg.world_model).to(self.device)
         self.actor_critic = ActorCritic(state_dim=state_dim, cfg=cfg.action).to(self.device)
 
+        # --- Create a separate, momentum-updated target perception agent for JEPA ---
+        self.target_perception_agent = copy.deepcopy(self.perception_agent).to(self.device)
+        # Freeze the target network; we will update it manually via Polyak averaging
+        for param in self.target_perception_agent.parameters():
+            param.requires_grad = False
+
         # --- Init Optimizers ---
         world_model_params = list(self.perception_agent.parameters()) + list(self.world_model.parameters())
         self.world_optimizer = optim.Adam(world_model_params, lr=cfg.training.world_model_lr)
@@ -56,6 +63,37 @@ class Trainer:
         self.obs, _ = self.env.reset()
 
         print("Trainer initialized successfully.")
+
+    def collect_experience(self, num_steps: int):
+        """Collects experience by interacting with the environment without training."""
+        pbar = tqdm(range(num_steps), desc="Collecting Experience")
+        for _ in pbar:
+            obs_batch = self.obs.unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                state_representation, _, _ = self.perception_agent(obs_batch)
+                action, _ = self.actor_critic.get_action(state_representation)
+
+            next_obs, reward, terminated, truncated, info = self.env.step(action)
+            self.replay_buffer.add(self.obs, action, reward, next_obs, terminated, truncated)
+            
+            self.obs = next_obs
+            self.episode_reward += reward
+            self.episode_length += 1
+            self.total_steps += 1
+
+            pbar.set_postfix({
+                'Reward': f"{self.episode_reward:.2f}", 
+                'Length': self.episode_length,
+                'Total Steps': self.total_steps
+            })
+            # Handle episode termination inside the collection loop
+            if terminated or truncated:
+                if self.logger:
+                    self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
+                    self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
+                self.obs, _ = self.env.reset()
+                self.episode_reward = 0
+                self.episode_length = 0
 
     def train_for_steps(self, num_steps: int, teacher_is_frozen: bool = False):
         """
@@ -103,13 +141,37 @@ class Trainer:
                 
                 batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
                 if batch is not None:
-                    loss_dict = self.update_models(batch, teacher_is_frozen)
+                    # In this interactive loop, the student is always training.
+                    loss_dict = self.update_models(batch, teacher_is_frozen, student_is_frozen=False)
                     
                     if self.logger: # No need to check step count here, it's already periodic
                         for key, value in loss_dict.items():
                             self.logger.log_scalar(f'train/{key}', value, self.total_steps)
     
-    def update_models(self, batch: dict, teacher_is_frozen: bool):
+    def train_from_buffer(self, num_updates: int):
+        """Trains models from the replay buffer without environment interaction."""
+        pbar = tqdm(range(num_updates), desc="Refining Teacher from Buffer")
+        for i in range(num_updates):
+            batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
+            if batch is not None:
+                # In this phase, we ONLY train the teacher.
+                loss_dict = self.update_models(batch, teacher_is_frozen=False, student_is_frozen=True)
+                
+                if self.logger:
+                    # Use a unique step for logging to avoid overwriting
+                    log_step = self.total_steps + i
+                    for key, value in loss_dict.items():
+                        if key in ['world_model_loss', 'prediction_loss', 'commitment_loss', 'code_entropy']:
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, log_step)
+
+    @torch.no_grad()
+    def _update_target_network(self):
+        """Update the target network with a momentum-based (Polyak) average."""
+        tau = self.cfg.training.target_update_rate
+        for param, target_param in zip(self.perception_agent.parameters(), self.target_perception_agent.parameters()):
+            target_param.data.copy_(tau * target_param.data + (1.0 - tau) * param.data)
+
+    def update_models(self, batch: dict, teacher_is_frozen: bool, student_is_frozen: bool = False):
         """
         Performs a single update step on the models using a batch of data.
         """
@@ -135,8 +197,8 @@ class Trainer:
             z_current, commitment_loss, code_entropy = self.perception_agent(obs_flat)
 
             with torch.no_grad():
-                # We only need the representation for the target, not the losses
-                z_next_target, _, _ = self.perception_agent(next_obs_flat)
+                # Use the separate, frozen target network to get the prediction target
+                z_next_target, _, _ = self.target_perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
 
             z_next_predicted = self.world_model(z_current, actions_flat)
@@ -162,68 +224,73 @@ class Trainer:
             loss_dict['commitment_loss'] = commitment_loss.item()
             loss_dict['code_entropy'] = code_entropy.item()
 
-        # --- 2. Actor-Critic (A2C) Update ---
-        with torch.no_grad():
-            # --- FIX: We only need to compute z_seq here for the A2C loss. ---
-            # If the teacher was frozen, z_current wasn't computed yet in the block above.
-            # So we must compute it now.
-            if teacher_is_frozen: 
-                z_current, _, _ = self.perception_agent(obs_flat)
+        if not student_is_frozen:
+            # --- 2. Actor-Critic (A2C) Update ---
+            with torch.no_grad():
+                # --- FIX: We only need to compute z_seq here for the A2C loss. ---
+                # If the teacher was frozen, z_current wasn't computed yet in the block above.
+                # So we must compute it now.
+                if teacher_is_frozen: 
+                    z_current, _, _ = self.perception_agent(obs_flat)
+                
+                # We can reuse z_current if it was already computed, but it will still have gradients.
+                # We must detach it before reshaping for the A2C update.
+                z_seq = z_current.detach().reshape(batch_size, seq_len, -1)
+                
+                # --- OPTIMIZATION: Avoid recomputing last_z_next if possible ---
+                if not teacher_is_frozen:
+                    # z_next_target was computed for the world model loss.
+                    # We can slice the last state representation from it.
+                    indices = torch.arange(batch_size, device=self.device) * seq_len + (seq_len - 1)
+                    last_z_next = z_next_target[indices]
+                else:
+                    # Otherwise, compute it from scratch
+                    last_next_obs = next_obs_seq[:, -1]
+                    last_z_next, _, _ = self.target_perception_agent(last_next_obs)
+
+                last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
+
+            # Get action logits and state values from the Actor-Critic model
+            # We use z_seq (which is detached) to ensure no gradients flow from A2C back to the perception agent
+            action_logits_seq, state_values_seq = self.actor_critic(z_seq)
+            state_values_seq = state_values_seq.squeeze(-1)
+
+            dist = torch.distributions.Categorical(logits=action_logits_seq)
+            log_probs_seq = dist.log_prob(actions_seq)
             
-            # We can reuse z_current if it was already computed, but it will still have gradients.
-            # We must detach it before reshaping for the A2C update.
-            z_seq = z_current.detach().reshape(batch_size, seq_len, -1)
+            # --- Calculate Advantages and Returns ---
+            # OPTIMIZATION: Vectorized advantage and return calculation
+            with torch.no_grad():
+                next_values = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+                masks = 1.0 - dones_seq.float()
+                returns = rewards_seq + self.cfg.training.gamma * next_values * masks
+                # Advantages are TD-errors in this case (r_t + gamma*V(s_{t+1}) - V(s_t))
+                advantages = returns - state_values_seq
             
-            # --- OPTIMIZATION: Avoid recomputing last_z_next if possible ---
-            if not teacher_is_frozen:
-                # z_next_target was computed for the world model loss.
-                # We can slice the last state representation from it.
-                indices = torch.arange(batch_size, device=self.device) * seq_len + (seq_len - 1)
-                last_z_next = z_next_target[indices]
-            else:
-                # Otherwise, compute it from scratch
-                last_next_obs = next_obs_seq[:, -1]
-                last_z_next, _, _ = self.perception_agent(last_next_obs)
+            # --- Calculate Final Losses ---
+            actor_loss = -(log_probs_seq * advantages.detach()).mean()
+            critic_loss = F.mse_loss(state_values_seq, returns)
+            entropy_loss = -dist.entropy().mean()
+            total_action_loss = (actor_loss + 
+                                self.cfg.training.critic_loss_coef * critic_loss + 
+                                self.cfg.training.entropy_coef * entropy_loss)
 
-            last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
+            # --- Backpropagation for the Actor-Critic ---
+            self.action_optimizer.zero_grad()
+            total_action_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
+            self.action_optimizer.step()
 
-        # Get action logits and state values from the Actor-Critic model
-        # We use z_seq (which is detached) to ensure no gradients flow from A2C back to the perception agent
-        action_logits_seq, state_values_seq = self.actor_critic(z_seq)
-        state_values_seq = state_values_seq.squeeze(-1)
-
-        dist = torch.distributions.Categorical(logits=action_logits_seq)
-        log_probs_seq = dist.log_prob(actions_seq)
+            # Log A2C losses
+            loss_dict['actor_loss'] = actor_loss.item()
+            loss_dict['critic_loss'] = critic_loss.item()
+            loss_dict['entropy_loss'] = entropy_loss.item()
+            loss_dict['total_action_loss'] = total_action_loss.item()
         
-        # --- Calculate Advantages and Returns ---
-        # OPTIMIZATION: Vectorized advantage and return calculation
-        with torch.no_grad():
-            next_values = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
-            masks = 1.0 - dones_seq.float()
-            returns = rewards_seq + self.cfg.training.gamma * next_values * masks
-            # Advantages are TD-errors in this case (r_t + gamma*V(s_{t+1}) - V(s_t))
-            advantages = returns - state_values_seq
-        
-        # --- Calculate Final Losses ---
-        actor_loss = -(log_probs_seq * advantages.detach()).mean()
-        critic_loss = F.mse_loss(state_values_seq, returns)
-        entropy_loss = -dist.entropy().mean()
-        total_action_loss = (actor_loss + 
-                            self.cfg.training.critic_loss_coef * critic_loss + 
-                            self.cfg.training.entropy_coef * entropy_loss)
+        # After the optimizer steps, update the target network if the teacher is training
+        if not teacher_is_frozen:
+            self._update_target_network()
 
-        # --- Backpropagation for the Actor-Critic ---
-        self.action_optimizer.zero_grad()
-        total_action_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
-        self.action_optimizer.step()
-
-        # Log A2C losses
-        loss_dict['actor_loss'] = actor_loss.item()
-        loss_dict['critic_loss'] = critic_loss.item()
-        loss_dict['entropy_loss'] = entropy_loss.item()
-        loss_dict['total_action_loss'] = total_action_loss.item()
-        
         return loss_dict
   
     def save_models(self):

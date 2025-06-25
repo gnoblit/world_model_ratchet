@@ -50,42 +50,38 @@ def test_run_il_loop_orchestration():
     
     # --- The Mocking Magic ---
     # Replace the real, slow `train_for_steps` with a mock object
-    # This mock will record all calls made to it.
     manager.trainer.train_for_steps = MagicMock()
+    # Mock the new methods as well
+    manager.trainer.collect_experience = MagicMock()
+    manager.trainer.train_from_buffer = MagicMock()
+    # Also mock the replay buffer's clear method
+    manager.trainer.replay_buffer.clear = MagicMock()
     
     # Replace the spawn method as well, since we test it separately
     manager.spawn_new_student = MagicMock()
     
     # --- Run the Loop ---
     manager.run_il_loop()
-    
+
     # --- Assertions ---
     # Check that the spawn method was called the correct number of times
     assert manager.spawn_new_student.call_count == config.il.num_generations
 
-    # Now, check the sequence and arguments of the calls to train_for_steps
-    train_calls = manager.trainer.train_for_steps.call_args_list
+    # 1. Check the initial warmup call
+    manager.trainer.train_for_steps.assert_any_call(config.il.warmup_steps, teacher_is_frozen=False)
+
+    # 2. Check the student training calls within the loop
+    student_training_call = call(config.il.student_steps, teacher_is_frozen=True)
+    assert manager.trainer.train_for_steps.call_args_list.count(student_training_call) == config.il.num_generations
+
+    # 3. Check the total number of calls to train_for_steps (warmup + generations)
+    assert manager.trainer.train_for_steps.call_count == 1 + config.il.num_generations
+
+    # 4. Check the teacher refinement calls
+    assert manager.trainer.replay_buffer.clear.call_count == config.il.num_generations
     
-    # Expected sequence of calls:
-    expected_calls = [
-        # Generation 0: Warmup
-        call(config.il.warmup_steps, teacher_is_frozen=False),
-        # Generation 1: Distill -> Interact
-        call(config.il.distill_steps, teacher_is_frozen=True),
-        call(config.il.interact_steps, teacher_is_frozen=False),
-        # Generation 2: Distill -> Interact
-        call(config.il.distill_steps, teacher_is_frozen=True),
-        call(config.il.interact_steps, teacher_is_frozen=False),
-    ]
-    
-    # Assert that the mock was called with the expected sequence
-    assert len(train_calls) == len(expected_calls), \
-        f"Expected {len(expected_calls)} calls to train_for_steps, but got {len(train_calls)}"
-        
-    train_calls[0].assert_called_with(config.il.warmup_steps, teacher_is_frozen=False)
-    
-    # Check the generational calls
-    assert train_calls[1] == expected_calls[1]
-    assert train_calls[2] == expected_calls[2]
-    assert train_calls[3] == expected_calls[3]
-    assert train_calls[4] == expected_calls[4]
+    manager.trainer.collect_experience.assert_called_with(num_steps=config.il.teacher_refinement_collect_steps)
+    assert manager.trainer.collect_experience.call_count == config.il.num_generations
+
+    manager.trainer.train_from_buffer.assert_called_with(num_updates=config.il.teacher_refinement_updates)
+    assert manager.trainer.train_from_buffer.call_count == config.il.num_generations
