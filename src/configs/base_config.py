@@ -35,8 +35,8 @@ class WorldModelConfig:
 @dataclass
 class ReplayBufferConfig:
     """Configuration for the Replay Buffer."""
-    # Maximum number of transitions to store across all episodes
-    capacity: int = 1_000_000
+    # Maximum number of *episodes* to store in the buffer.
+    capacity: int = 10_000
     # The length of the sequences (trajectories) to sample
     sequence_length: int = 50
 

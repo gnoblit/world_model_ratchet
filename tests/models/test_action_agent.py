@@ -8,7 +8,8 @@ def test_actor_critic_initialization():
     try:
         model = ActorCritic(
             state_dim=config.perception.code_dim,
-            cfg=config.action
+            num_actions=config.action.num_actions,
+            cfg=config.action,
         )
         assert model is not None
         assert model.actor is not None
@@ -19,7 +20,11 @@ def test_actor_critic_initialization():
 def test_get_action_and_get_value():
     """Tests the helper methods for both single and batch inputs."""
     config = get_base_config()
-    model = ActorCritic(state_dim=config.perception.code_dim, cfg=config.action)
+    model = ActorCritic(
+        state_dim=config.perception.code_dim,
+        num_actions=config.action.num_actions,
+        cfg=config.action,
+    )
 
     # --- Test with single input (batch size 1) ---
     dummy_single_state = torch.randn(1, config.perception.code_dim)

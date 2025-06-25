@@ -37,7 +37,7 @@ class IteratedLearningManager:
         
         # Create a new optimizer for the new student
         new_optimizer = optim.Adam(
-            self.trainer.actor_critic.parameters(), 
+            new_student.parameters(), 
             lr=self.cfg.training.action_model_lr
         )
         

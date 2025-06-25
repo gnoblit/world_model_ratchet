@@ -242,7 +242,7 @@ class Trainer:
                 else:
                     # Otherwise, compute it from scratch
                     last_next_obs = next_obs_seq[:, -1]
-                    last_z_next, _, _ = self.target_perception_agent(last_next_obs)
+                    last_z_next, _, _ = self.perception_agent(last_next_obs)
 
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 

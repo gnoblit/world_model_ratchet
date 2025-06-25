@@ -163,7 +163,7 @@ class PerceptionAgent(nn.Module):
         We will pass a configureation object to keep the parameters organized.
         
         Args:
-            cfg (ModelConfig): A configuration object containing the model hyperparameters.
+            cfg (PerceptionConfig): A configuration object containing the model hyperparameters.
         """
         super().__init__()
 
