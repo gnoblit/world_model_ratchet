@@ -2,6 +2,7 @@
 import os
 import argparse
 import time
+import uuid 
 
 # Corrected imports for a file inside the `src` package
 from src.configs.base_config import get_base_config
@@ -26,13 +27,26 @@ def main(args):
         config.il.interact_steps = 5_000
 
     # --- Set run name based on experiment type ---
+
+    # Get the current date as a string
+    current_time = time.time()
+    datestamp = time.strftime('%Y-%m-%d_%H-%M', time.localtime(current_time)).replace("-", "_")
+    # Generate a short, unique hex ID (e.g., 'a1b2c3')
+    unique_id = uuid.uuid4().hex[:6]
+    # Store
+    config.run_timestamp = current_time
+    config.run_uuid = unique_id
+
+    # Determine the base name for the run
     if args.run_name:
-        config.run_name = args.run_name
+        base_name = args.run_name
     else:
-        # Create a default name if not provided
         mode = "il" if args.experiment == "il" else "baseline"
         mini_str = "_mini" if args.mini else ""
-        config.run_name = f"{mode}{mini_str}_{int(time.time())}"
+        base_name = f"{mode}{mini_str}"
+    
+    # Combine the datestamp and base name for the final run name
+    config.run_name = f"{datestamp}_{base_name}_{unique_id}"
 
     # --- Setup Logging and Config Saving ---
     log_dir = None
