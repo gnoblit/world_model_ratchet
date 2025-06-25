@@ -22,7 +22,7 @@ class Trainer:
         self.device = self.cfg.training.device
         print(f"Using device: {self.device}")
 
-        # --- Ini Components ---
+        # --- Init Components ---
         self.env = CrafterEnvWrapper(cfg.env)
         
         state_dim = cfg.perception.code_dim
@@ -40,8 +40,12 @@ class Trainer:
         self.replay_buffer = ReplayBuffer(cfg.replay_buffer)
         
         # Init Logger
-        log_dir = os.path.join(cfg.experiment_dir, cfg.run_name)
-        self.logger = Logger(log_dir)
+        self.logger = None
+        self.log_dir = None
+        # Only initialize the logger if a run_name is provided
+        if cfg.run_name:
+            self.log_dir = os.path.join(cfg.experiment_dir, cfg.run_name)
+            self.logger = Logger(self.log_dir)
 
         # --- State Tracking ---
         self.total_steps = 0
@@ -241,7 +245,28 @@ class Trainer:
         
         return loss_dict
     
+    def save_models(self):
+        """Saves the current state of the models to the experiment directory."""
+        if not self.log_dir:
+            print("No log directory specified. Skipping model save.")
+            return
+
+        # Define paths for each model component
+        perception_path = os.path.join(self.log_dir, "perception_agent.pth")
+        actor_critic_path = os.path.join(self.log_dir, "actor_critic.pth")
+        world_model_path = os.path.join(self.log_dir, "world_model.pth")
+        
+        # Save the state dict for each model
+        torch.save(self.perception_agent.state_dict(), perception_path)
+        torch.save(self.actor_critic.state_dict(), actor_critic_path)
+        torch.save(self.world_model.state_dict(), world_model_path)
+        
+        print(f"Models saved to {self.log_dir}")
+    
     def close(self):
-        """A helper method to clean up resources."""
+        """A helper method to clean up resources and save models."""
+        print("Closing trainer and saving models...")
+        self.save_models() # Call save before closing
         self.env.close()
-        self.logger.close()
+        if self.logger:
+            self.logger.close()

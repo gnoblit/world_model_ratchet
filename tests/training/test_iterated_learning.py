@@ -9,6 +9,7 @@ def test_il_manager_initialization():
     try:
         config = get_base_config()
         config.training.device = 'cpu'
+        config.run_name = None
         manager = IteratedLearningManager(config)
         assert manager is not None
         assert manager.trainer is not None
@@ -19,6 +20,8 @@ def test_spawn_new_student_logic():
     """Tests that the spawn_new_student method correctly replaces the student and optimizer."""
     config = get_base_config()
     config.training.device = 'cpu'
+    config.run_name = None
+
     manager = IteratedLearningManager(config)
     
     # Get the original student and optimizer IDs to check they are replaced
@@ -41,6 +44,7 @@ def test_run_il_loop_orchestration():
     config.training.device = 'cpu'
     # Use a small number of generations for a quick test
     config.il.num_generations = 2
+    config.run_name = None
     
     manager = IteratedLearningManager(config)
     
