@@ -1,6 +1,6 @@
 import torch
 import pytest
-import copy
+from unittest.mock import MagicMock, call # Import MagicMock
 
 from configs.base_config import get_base_config
 from training.trainer import Trainer
@@ -12,8 +12,81 @@ def test_trainer_initialization():
         config.training.device = 'cpu'
         trainer = Trainer(config)
         assert trainer is not None, "Trainer should not be None"
+        assert trainer.logger is not None 
     except Exception as e:
         pytest.fail(f"Trainer initialization failed: {e}")
+
+def test_trainer_logging_on_episode_end():
+    """Tests that episode stats are logged when an episode terminates."""
+    try:
+        config = get_base_config()
+        config.training.device = 'cpu'
+        num_steps = 5
+        trainer = Trainer(config)
+    except Exception as e:
+        pytest.fail(f"Test setup failed during Trainer initialization: {e}")
+
+    # Mock the logger to spy on its calls
+    trainer.logger = MagicMock()
+    
+    # --- Simulate a short episode that terminates ---
+    # Manually set terminated to True on the last step
+    original_step_fn = trainer.env.step
+    def mock_step(action):
+        if trainer.total_steps == num_steps - 1:
+            # This now returns a (H, W, C) numpy array
+            dummy_obs_np = trainer.env.observation_space.sample()
+            # ToTensor converts it to (C, H, W) tensor, which is what the real step fn returns
+            dummy_obs_tensor = trainer.env.transform(dummy_obs_np.copy())
+            return dummy_obs_tensor, 1.0, True, False, {}
+        return original_step_fn(action)
+        
+    # Monkey-patch the environment's step function
+    trainer.env.step = mock_step 
+    
+    # --- Run the training loop ---
+    try:
+        trainer.train_for_steps(num_steps=num_steps)
+    except Exception as e:
+        pytest.fail(f"trainer.train_for_steps() raised an unexpected exception: {e}")
+
+    # --- Assertions ---
+    try:
+        # Check that the logger was called at least twice (for reward and length)
+        assert trainer.logger.log_scalar.call_count >= 2, \
+            f"Expected at least 2 log calls, but got {trainer.logger.log_scalar.call_count}"
+        
+        # The total reward will be the sum of rewards from each step.
+        # Since our mock returns 1.0 on the final step and the real env returns
+        # a small float on others, it's hard to predict the exact total.
+        # It's better to check that the call was made with the correct tag and step.
+        # A more advanced mock could control the reward for every step.
+
+        # Let's check the final call more robustly.
+        # After 5 steps, the final episode length is 5 and total_steps is 5.
+        # The final reward is the sum of rewards. Let's assume the mock's 1.0 dominates.
+        
+        # Use assert_any_call which is more flexible than checking the entire call list.
+        trainer.logger.log_scalar.assert_any_call(
+            'rollout/episode_length', 
+            num_steps,  # The episode length should be 5
+            num_steps   # The global step should be 5
+        )
+        
+        # We can also check the reward call, but the value is less predictable.
+        # Let's find the call for 'rollout/episode_reward' and check its arguments.
+        reward_logged = False
+        for c in trainer.logger.log_scalar.call_args_list:
+            tag, value, step = c.args
+            if tag == 'rollout/episode_reward' and step == num_steps:
+                reward_logged = True
+                # We can assert the value is a float, for instance
+                assert isinstance(value, float)
+                break
+        assert reward_logged, "Episode reward was not logged on termination."
+
+    except AssertionError as e:
+        pytest.fail(f"Assertion failed during log verification: {e}")
 
 def test_update_models_logic_unfrozen():
     """

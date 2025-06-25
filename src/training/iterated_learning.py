@@ -71,4 +71,4 @@ class IteratedLearningManager:
 
         print("\nIterated Learning finished.")
         # Final cleanup
-        self.trainer.env.close()
+        self.trainer.close()

@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Tuple
+import time
 import torch
 
 @dataclass
@@ -85,6 +86,7 @@ class ILConfig:
 class MainConfig:
     """Main configuration for the project."""
     project_name: str = "world_model_ratchet"
+    run_name: str = field(default_factory=lambda: f"run_{int(time.time())}")
     experiment_dir: str = "experiments"
 
     env: EnvConfig = field(default_factory=EnvConfig)

@@ -18,7 +18,7 @@ class CrafterEnvWrapper(gym.Env):
 
         # Define observation and action spaces according to Gymansium standards
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(3, *cfg.image_size), dtype=np.uint8
+            low=0, high=255, shape=(*cfg.image_size, 3), dtype=np.uint8
         )
         self.action_space = gym.spaces.Discrete(self._env.action_space.n)
 

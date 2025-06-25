@@ -13,13 +13,16 @@ from models.actor_critic import ActorCritic
 from models.world_model import WorldModel
 from utils.replay_buffer import ReplayBuffer
 
+import os
+from utils.logger import Logger 
+
 class Trainer:
     def __init__(self, cfg: MainConfig):
         self.cfg = cfg
         self.device = self.cfg.training.device
         print(f"Using device: {self.device}")
 
-        # --- Initialize Components ---
+        # --- Ini Components ---
         self.env = CrafterEnvWrapper(cfg.env)
         
         state_dim = cfg.perception.code_dim
@@ -29,18 +32,22 @@ class Trainer:
         self.world_model = WorldModel(state_dim=state_dim, num_actions=num_actions, cfg=cfg.world_model).to(self.device)
         self.actor_critic = ActorCritic(state_dim=state_dim, cfg=cfg.action).to(self.device)
 
-        # --- Initialize Optimizers ---
+        # --- Init Optimizers ---
         world_model_params = list(self.perception_agent.parameters()) + list(self.world_model.parameters())
         self.world_optimizer = optim.Adam(world_model_params, lr=cfg.training.world_model_lr)
         self.action_optimizer = optim.Adam(self.actor_critic.parameters(), lr=cfg.training.action_model_lr)
 
         self.replay_buffer = ReplayBuffer(cfg.replay_buffer)
         
+        # Init Logger
+        log_dir = os.path.join(cfg.experiment_dir, cfg.run_name)
+        self.logger = Logger(log_dir)
+
         # --- State Tracking ---
         self.total_steps = 0
         self.episode_reward = 0
         self.episode_length = 0
-        # We must initialize the first observation here
+        # We must init the first observation here
         self.obs, _ = self.env.reset()
 
         print("Trainer initialized successfully.")
@@ -70,22 +77,34 @@ class Trainer:
             self.total_steps += 1
 
             if terminated or truncated:
+                # --- LOGGING EPISODE STATS ---
+                self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
+                self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
+                
                 pbar.set_description(f"Ep Done | R: {self.episode_reward:.2f} | L: {self.episode_length}")
                 self.obs, _ = self.env.reset()
                 self.episode_reward = 0
                 self.episode_length = 0
 
-            # --- Learning ---
             if self.total_steps > self.cfg.training.learning_starts:
                 batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
                 if batch is not None:
-                    # Pass the frozen flag to the update method
-                    self.update_models(batch, teacher_is_frozen)
-
+                    # The update method will now return a dictionary of losses
+                    loss_dict = self.update_models(batch, teacher_is_frozen)
+                    
+                    # --- LOGGING TRAINING LOSSES ---
+                    # Log every N steps to avoid cluttering the logs
+                    if self.total_steps % 100 == 0: 
+                        for key, value in loss_dict.items():
+                            self.logger.log_scalar(f'train/{key}', value, self.total_steps)    
+    
     def update_models(self, batch: dict, teacher_is_frozen: bool):
         """
         Performs a single update step on the models using a batch of data.
         """
+        # For logging
+        loss_dict = {}
+
         # --- World Model (JEPA) Update ---
         if not teacher_is_frozen:
             # Get the data from the batch
@@ -122,6 +141,9 @@ class Trainer:
             self.world_optimizer.zero_grad()
             world_model_loss.backward()
             self.world_optimizer.step()
+
+            # Log
+            loss_dict['world_model_loss'] = world_model_loss.item()
             
         # --- 2. Actor-Critic (A2C) Update ---
         
@@ -209,3 +231,17 @@ class Trainer:
         # Gradient clipping can help stabilize training
         torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
         self.action_optimizer.step()
+
+        # Log
+                # Add individual losses to the dictionary
+        loss_dict['actor_loss'] = actor_loss.item()
+        loss_dict['critic_loss'] = critic_loss.item()
+        loss_dict['entropy_loss'] = entropy_loss.item()
+        loss_dict['total_action_loss'] = total_action_loss.item()
+        
+        return loss_dict
+    
+    def close(self):
+        """A helper method to clean up resources."""
+        self.env.close()
+        self.logger.close()
