@@ -6,15 +6,15 @@ from torch.distributions import Categorical
 
 from tqdm import tqdm
     
-from configs.base_config import MainConfig
-from environment.crafter_env import CrafterEnvWrapper
-from models.perception import PerceptionAgent
-from models.actor_critic import ActorCritic
-from models.world_model import WorldModel
-from utils.replay_buffer import ReplayBuffer
+from src.configs.base_config import MainConfig
+from src.environment.crafter_env import CrafterEnvWrapper
+from src.models.perception import PerceptionAgent
+from src.models.actor_critic import ActorCritic
+from src.models.world_model import WorldModel
+from src.utils.replay_buffer import ReplayBuffer
+from src.utils.logger import Logger
 
 import os
-from utils.logger import Logger 
 
 class Trainer:
     def __init__(self, cfg: MainConfig):
@@ -42,6 +42,7 @@ class Trainer:
         # Init Logger
         self.logger = None
         self.log_dir = None
+
         # Only initialize the logger if a run_name is provided
         if cfg.run_name:
             self.log_dir = os.path.join(cfg.experiment_dir, cfg.run_name)
