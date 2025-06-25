@@ -5,10 +5,10 @@ import time
 import uuid 
 
 # Corrected imports for a file inside the `src` package
-from src.configs.base_config import get_base_config
-from src.utils.config_utils import save_config
-from src.training.trainer import Trainer
-from src.training.iterated_learning import IteratedLearningManager
+from configs.base_config import get_base_config
+from utils.config_utils import save_config
+from training.trainer import Trainer
+from training.iterated_learning import IteratedLearningManager
 
 def main(args):
     """Main function to configure and run the training process."""

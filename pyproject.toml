@@ -25,6 +25,9 @@ dev = [
     "pytest", 
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.ruff]
 line-length = 88
 select = ["E", "F", "W", "I"]
@@ -35,8 +38,7 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 # Tell pytest that the 'src' directory is the root for our python packages.
-# This adds 'src/' to the PYTHONPATH.
-pythonpath = ["src"]
 
 # Tell pytest to specifically look for tests in the 'tests' directory.
 testpaths = ["tests"]
+pythonpath = ["src"]
