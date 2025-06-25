@@ -63,12 +63,13 @@ def test_update_models_logic_unfrozen():
     """Tests the update_models method when the teacher is NOT frozen."""
     config = get_base_config()
     config.training.device = 'cpu'
-    config.run_name = None # Disable logging
+    config.run_name = None
     config.training.batch_size = 4
     config.replay_buffer.sequence_length = 10
     
     trainer = Trainer(config)
     
+    # ... (mock_batch setup is the same)
     batch_size = config.training.batch_size
     seq_len = config.replay_buffer.sequence_length
     img_shape = config.env.image_size
@@ -84,7 +85,23 @@ def test_update_models_logic_unfrozen():
 
     wm_params_before = [p.clone() for p in trainer.perception_agent.parameters()]
     ac_params_before = [p.clone() for p in trainer.actor_critic.parameters()]
-    trainer.update_models(mock_batch, teacher_is_frozen=False)
+    
+    # --- UPDATED TEST LOGIC ---
+    # The method now returns a dictionary of losses
+    loss_dict = trainer.update_models(mock_batch, teacher_is_frozen=False)
+
+    # Assert that the returned object is a dictionary
+    assert isinstance(loss_dict, dict), "update_models should return a dictionary of losses"
+    
+    # Assert that the dictionary contains all the expected loss keys
+    expected_keys = [
+        'world_model_loss', 'prediction_loss', 'commitment_loss',
+        'actor_loss', 'critic_loss', 'entropy_loss', 'total_action_loss'
+    ]
+    for key in expected_keys:
+        assert key in loss_dict, f"Loss dictionary is missing key: {key}"
+        assert isinstance(loss_dict[key], float), f"Loss value for {key} should be a float"
+    # --- END OF UPDATED LOGIC ---
 
     wm_params_after = list(trainer.perception_agent.parameters())
     assert any(not torch.equal(p_before, p_after) for p_before, p_after in zip(wm_params_before, wm_params_after))
@@ -95,12 +112,13 @@ def test_update_models_logic_frozen():
     """Tests the update_models method when the teacher IS frozen."""
     config = get_base_config()
     config.training.device = 'cpu'
-    config.run_name = None # Disable logging
+    config.run_name = None
     config.training.batch_size = 4
     config.replay_buffer.sequence_length = 10
     
     trainer = Trainer(config)
     
+    # ... (mock_batch setup is the same)
     batch_size = config.training.batch_size
     seq_len = config.replay_buffer.sequence_length
     img_shape = config.env.image_size
@@ -116,11 +134,25 @@ def test_update_models_logic_frozen():
     
     wm_params_before = [p.clone() for p in trainer.perception_agent.parameters()]
     ac_params_before = [p.clone() for p in trainer.actor_critic.parameters()]
-    trainer.update_models(mock_batch, teacher_is_frozen=True)
+
+    # --- UPDATED TEST LOGIC ---
+    loss_dict = trainer.update_models(mock_batch, teacher_is_frozen=True)
+
+    # Assert that the returned object is a dictionary
+    assert isinstance(loss_dict, dict)
+    
+    # When frozen, the world model losses should NOT be present
+    assert 'world_model_loss' not in loss_dict
+    assert 'prediction_loss' not in loss_dict
+    assert 'commitment_loss' not in loss_dict
+    
+    # But the A2C losses should be present
+    a2c_keys = ['actor_loss', 'critic_loss', 'entropy_loss', 'total_action_loss']
+    for key in a2c_keys:
+        assert key in loss_dict, f"Loss dictionary is missing key: {key} even when teacher is frozen"
+    # --- END OF UPDATED LOGIC ---
 
     wm_params_after = list(trainer.perception_agent.parameters())
-    assert all(torch.equal(p_before, p_after) for p_before, p_after in zip(wm_params_before, wm_params_after)), \
-        "World model/perception parameters should NOT be updated when teacher is frozen."
+    assert all(torch.equal(p_before, p_after) for p_before, p_after in zip(wm_params_before, wm_params_after))
     ac_params_after = list(trainer.actor_critic.parameters())
-    assert any(not torch.equal(p_before, p_after) for p_before, p_after in zip(ac_params_before, ac_params_after)), \
-        "Actor-Critic parameters should still be updated when teacher is frozen."
+    assert any(not torch.equal(p_before, p_after) for p_before, p_after in zip(ac_params_before, ac_params_after))

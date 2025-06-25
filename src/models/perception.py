@@ -81,7 +81,7 @@ class SharedCodebook(nn.Module):
         self.num_codes = num_codes
         self.code_dim = code_dim
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Takes continuous input features and maps them to a sparse combination of codes.
         
@@ -91,8 +91,10 @@ class SharedCodebook(nn.Module):
                                                 Note: feature_dim must equal code_dim.
                                                 
         Returns:
-            torch.Tensor: The final representation, which is the weighted sum of codes.
-                                Shape: (batch_size, code_dim)."""
+            A tuple (final_representation, commitment_loss):
+                final_representation (torch.Tensor): The final representation `z_t`.
+                commitment_loss (torch.Tensor): The loss term to prevent collapse.
+        """
         
         if features.shape[-1] != self.code_dim:
             raise ValueError(
@@ -120,8 +122,25 @@ class SharedCodebook(nn.Module):
         # Matmul: (B, C) @ (C, D) -> (B, D)
         final_representation = torch.matmul(weights, codes)
         # Shape: (batch_size, code_dim)
+        
+        # We need the chosen code vectors to calculate the commitment loss.
+        # We can get the "closest" code for each feature vector in the batch.
+        # This is a discrete, non-differentiable step, but we use it for a loss term.
+        closest_code_indices = torch.argmax(similarity_scores, dim=-1)
+        quantized_features = self.embedding(closest_code_indices)
 
-        return final_representation
+        # The commitment loss encourages the encoder's output (features)
+        # to be "committed" to the chosen code vector.
+        # We stop the gradient on the quantized features so the encoder is pulled
+        # towards the codes, not the other way around.
+        commitment_loss = F.mse_loss(features, quantized_features.detach())
+        
+        # We also need to allow the gradient to flow back from the final_representation
+        # to the encoder. The commitment loss helps the encoder, but the main task
+        # gradient still needs to pass through. This is a common trick in VQ-VAEs.
+        final_representation = features + (final_representation - features).detach()
+
+        return final_representation, commitment_loss
     
 class PerceptionAgent(nn.Module):
     """
@@ -161,7 +180,7 @@ class PerceptionAgent(nn.Module):
             code_dim=cfg.code_dim,
         )
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         The full forward pass from pixels to structured representation.
         
@@ -170,13 +189,14 @@ class PerceptionAgent(nn.Module):
                                             Shape: (batch_size, channels, height, width)
             
         Returns:
-            torch.Tensor: The final representation `z_t` from the codebook. 
-                                Shape: (batch_size, code_dim)
+            A tuple (representation, commitment_loss):
+                representation (torch.Tensor): The final representation `z_t`.
+                commitment_loss (torch.Tensor): The loss from the codebook.
         """
 
         # 1. Encode the raw pixes into a continuous feature vector
         features = self.encoder(obs)
         # 2. Map the continuous features to a sparse combination of discrete codes
-        representation = self.codebook(features)
+        representation, commitment_loss = self.codebook(features)
 
-        return representation
+        return representation, commitment_loss

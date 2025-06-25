@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+
 class ActorCritic(nn.Module):
     """
     An Actor-Critic module that contains both the policy network (Actor)

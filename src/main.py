@@ -17,14 +17,14 @@ def main(args):
     # --- Override config for mini-run if specified ---
     if args.mini:
         print("--- RUNNING IN MINI MODE ---")
-        config.training.learning_starts = 1000
+        config.training.learning_starts = 500
         # For Baseline
-        config.training.total_train_steps = 25_000 
+        config.training.total_train_steps = 5_000 
         # For IL
         config.il.num_generations = 2
-        config.il.warmup_steps = 5_000
-        config.il.distill_steps = 5_000
-        config.il.interact_steps = 5_000
+        config.il.warmup_steps = 100
+        config.il.distill_steps = 100
+        config.il.interact_steps = 100
 
     # --- Set run name based on experiment type ---
 

@@ -57,6 +57,9 @@ class TrainingConfig:
     
     # How many steps to collect before starting to train the models
     learning_starts: int = 5000
+
+    # Perform a model update every N environment steps.
+    update_every_steps: int = 4 # A common value
     
     # The batch size for sampling from the replay buffer
     batch_size: int = 32
@@ -70,6 +73,8 @@ class TrainingConfig:
     entropy_coef: float = 0.01
     # Gradient clipping
     max_grad_norm: float = 0.5
+    # Commitment loss coefficient
+    commitment_loss_coef: float = 0.25 # Beta value to weight the commitment loss
 
 @dataclass
 class ILConfig:

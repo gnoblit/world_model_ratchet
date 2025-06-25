@@ -2,9 +2,9 @@ import torch
 import torch.optim as optim
 from tqdm import tqdm
 
-from src.configs.base_config import MainConfig
-from src.training.trainer import Trainer
-from src.models.actor_critic import ActorCritic
+from configs.base_config import MainConfig
+from training.trainer import Trainer
+from models.actor_critic import ActorCritic
 
 class IteratedLearningManager:
     """
