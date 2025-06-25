@@ -42,13 +42,14 @@ class ReplayBuffer:
         # Convert all lists to numpy arrays
         episode_dict = {}
         for key, values in self.current_episode.items():
-            dtype = np.float32 if key == 'rewards' else (np.bool_ if key == 'dones' else np.object_)
             if key in ['obs', 'next_obs']:
                  episode_dict[key] = np.array(values, dtype=np.float32) # Assuming observations are already scaled to [0,1]
             elif key == 'actions':
                 episode_dict[key] = np.array(values, dtype=np.int64)
-            else:
-                episode_dict[key] = np.array(values, dtype=dtype)
+            elif key == 'rewards':
+                episode_dict[key] = np.array(values, dtype=np.float32)
+            elif key == 'dones':
+                episode_dict[key] = np.array(values, dtype=np.bool_)
         
         self.buffer.append(episode_dict)
         self.reset_current_episode()

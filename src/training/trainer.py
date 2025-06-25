@@ -31,7 +31,7 @@ class Trainer:
 
         self.perception_agent = PerceptionAgent(cfg.perception).to(self.device)
         self.world_model = WorldModel(state_dim=state_dim, num_actions=num_actions, cfg=cfg.world_model).to(self.device)
-        self.actor_critic = ActorCritic(state_dim=state_dim, cfg=cfg.action).to(self.device)
+        self.actor_critic = ActorCritic(state_dim=state_dim, num_actions=num_actions, cfg=cfg.action).to(self.device)
 
         # --- Create a separate, momentum-updated target perception agent for JEPA ---
         self.target_perception_agent = copy.deepcopy(self.perception_agent).to(self.device)
@@ -227,15 +227,11 @@ class Trainer:
         if not student_is_frozen:
             # --- 2. Actor-Critic (A2C) Update ---
             with torch.no_grad():
-                # --- FIX: We only need to compute z_seq here for the A2C loss. ---
-                # If the teacher was frozen, z_current wasn't computed yet in the block above.
-                # So we must compute it now.
-                if teacher_is_frozen: 
-                    z_current, _, _ = self.perception_agent(obs_flat)
-                
-                # We can reuse z_current if it was already computed, but it will still have gradients.
-                # We must detach it before reshaping for the A2C update.
-                z_seq = z_current.detach().reshape(batch_size, seq_len, -1)
+                # We always re-calculate the state representation for the actor-critic
+                # using the most up-to-date perception agent. This avoids using a
+                # stale representation if the teacher was just updated.
+                z_current_for_ac, _, _ = self.perception_agent(obs_flat)
+                z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
                 
                 # --- OPTIMIZATION: Avoid recomputing last_z_next if possible ---
                 if not teacher_is_frozen:

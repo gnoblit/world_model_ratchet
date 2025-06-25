@@ -25,9 +25,12 @@ class IteratedLearningManager:
         """
         # Get the necessary dimensions from the config
         state_dim = self.cfg.perception.code_dim
+        num_actions = self.cfg.action.num_actions
         
         # Create a new instance of the ActorCritic model
-        new_student = ActorCritic(state_dim=state_dim, cfg=self.cfg.action).to(self.trainer.device)
+        new_student = ActorCritic(state_dim=state_dim, num_actions=num_actions, 
+                                  cfg=self.cfg.action).to(self.trainer.device)
+
         
         # Replace the old student in the trainer with the new one
         self.trainer.actor_critic = new_student

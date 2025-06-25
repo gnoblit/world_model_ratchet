@@ -175,7 +175,7 @@ class PerceptionAgent(nn.Module):
         # Feature dimension of the encoder's output must
         # match the code dim of the codebook's input/output
 
-        if cfg.feature_dim != cfg. code_dim:
+        if cfg.feature_dim != cfg.code_dim:
             raise ValueError("""
                                 VisionEncoder's feature dim must match SharedCodebook's code_dim.
                                 Check config.

@@ -7,17 +7,18 @@ class ActorCritic(nn.Module):
     An Actor-Critic module that contains both the policy network (Actor)
     and the value network (Critic).
     """
-    def __init__(self, state_dim: int, cfg):
+    def __init__(self, state_dim: int, num_actions: int, cfg):
+
         """
         Initializes the ActorCritic model.
 
         Args:
             state_dim (int): The dimensionality of the input state representation `z_t`.
+            num_actions (int): The number of possible discrete actions.
             cfg (ActionConfig): The configuration object for the action agent.
         """
         super().__init__()
         
-        num_actions = cfg.num_actions
         hidden_dim = cfg.hidden_dim
 
         # --- Actor Network ---

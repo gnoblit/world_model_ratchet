@@ -22,9 +22,10 @@ def main(args):
         config.training.total_train_steps = 5_000 
         # For IL
         config.il.num_generations = 2
-        config.il.warmup_steps = 100
-        config.il.distill_steps = 100
-        config.il.interact_steps = 100
+        config.il.warmup_steps = 200
+        config.il.student_steps = 200
+        config.il.teacher_refinement_collect_steps = 100
+        config.il.teacher_refinement_updates = 100
 
     # --- Set run name based on experiment type ---
 
