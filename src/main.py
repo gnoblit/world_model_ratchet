@@ -44,7 +44,7 @@ def main(args):
     # --- Launch the selected experiment ---
     if args.experiment == "baseline":
         print(f"--- Starting Baseline Experiment: {config.run_name} ---")
-        trainer = Trainer(config, logger_dir=log_dir)
+        trainer = Trainer(config)
         trainer.train_for_steps(
             num_steps=config.training.total_train_steps, 
             teacher_is_frozen=False
@@ -53,7 +53,7 @@ def main(args):
     
     elif args.experiment == "il":
         print(f"--- Starting Iterated Learning Experiment: {config.run_name} ---")
-        manager = IteratedLearningManager(config, logger_dir=log_dir)
+        manager = IteratedLearningManager(config)
         manager.run_il_loop()
 
     else:
