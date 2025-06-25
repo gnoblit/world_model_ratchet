@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Tuple
+import torch
 
 @dataclass
 class EnvConfig:
@@ -40,6 +41,34 @@ class ReplayBufferConfig:
     sequence_length: int = 50
 
 @dataclass
+class TrainingConfig:
+    """Configuration for the training process."""
+    # Move device selection into the config for better control
+    # default_factory allows us to run code to determine the default value
+    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
+
+    # Learning rates for the optimizers
+    world_model_lr: float = 1e-4
+    action_model_lr: float = 3e-4
+    
+    # Total number of environment steps to train for
+    total_train_steps: int = 1_000_000
+    
+    # How many steps to collect before starting to train the models
+    learning_starts: int = 5000
+    
+    # The batch size for sampling from the replay buffer
+    batch_size: int = 32
+
+    # --- A2C specific hyperparameters ---
+    # Discount factor for future rewards
+    gamma: float = 0.99
+    # Coefficient for the critic's value loss
+    critic_loss_coef: float = 0.5
+    # Coefficient for the entropy bonus to encourage exploration
+    entropy_coef: float = 0.01
+
+@dataclass
 class MainConfig:
     """Main configuration for the project."""
     project_name: str = "world_model_ratchet"
@@ -55,6 +84,8 @@ class MainConfig:
     world_model: WorldModelConfig = field(default_factory=WorldModelConfig)
     # ReplayBuffer
     replay_buffer: ReplayBufferConfig = field(default_factory=ReplayBufferConfig)
+    # TrainingConfig
+    training: TrainingConfig = field(default_factory=TrainingConfig)
 
 def get_base_config():
     return MainConfig()

@@ -1,54 +1,43 @@
 import torch
-import pytest  
+import pytest
 from configs.base_config import get_base_config
-from models.action import ActionAgent
+from models.actor_critic import ActorCritic
 
-def test_action_agent_initialization():
-    """Tests that the ActionAgent can be initialized."""
+def test_actor_critic_initialization():
     config = get_base_config()
     try:
-        agent = ActionAgent(
+        model = ActorCritic(
             state_dim=config.perception.code_dim,
-            cfg=config.action,
+            cfg=config.action
         )
-        assert agent is not None, "Agent should exist after init."
+        assert model is not None
+        assert model.actor is not None
+        assert model.critic is not None
     except Exception as e:
-        pytest.fail(f"ActionAgent initialization failed with error: {e}")
+        pytest.fail(f"ActorCritic initialization failed: {e}")
 
-def test_action_agent_forward_pass():
-    """Tests the forward pass for the correct output shape."""
+def test_get_action_and_get_value():
+    """Tests the helper methods for both single and batch inputs."""
     config = get_base_config()
-    agent = ActionAgent(
-        state_dim=config.perception.code_dim,
-        cfg=config.action,
-    )
-    batch_size = 4
-    dummy_state_batch = torch.randn(batch_size, config.perception.code_dim)
+    model = ActorCritic(state_dim=config.perception.code_dim, cfg=config.action)
 
-    action_logits = agent.forward(dummy_state_batch)
-
-    expected_shape = (batch_size, config.action.num_actions)
-
-    assert action_logits.shape == expected_shape, \
-        f"Expected shape {expected_shape}, but got {action_logits.shape}"
-
-def test_action_agent_get_action():
-    """Tests the get_action helper method for correct types and value ranges."""
-    config = get_base_config()
-    agent = ActionAgent(
-        state_dim=config.perception.code_dim, 
-        cfg=config.action,
-    )
-    
+    # --- Test with single input (batch size 1) ---
     dummy_single_state = torch.randn(1, config.perception.code_dim)
 
-    # Test stochastic action
-    action, log_prob = agent.get_action(dummy_single_state, deterministic=False)
-    assert isinstance(action, int), "Stochastic action should be an integer."
-    assert 0 <= action < config.action.num_actions, "Stochastic action out of range."
-    assert isinstance(log_prob, torch.Tensor), "Log prob should be a tensor."
+    action, log_prob = model.get_action(dummy_single_state)
+    assert isinstance(action, int)
+    assert 0 <= action < config.action.num_actions
+    # This assertion will now pass
+    assert log_prob.shape == (), f"Expected scalar log_prob, but got shape {log_prob.shape}"
 
-    # Test deterministic action
-    action_det, _ = agent.get_action(dummy_single_state, deterministic=True)
-    assert isinstance(action_det, int), "Deterministic action should be an integer."
-    assert 0 <= action_det < config.action.num_actions, "Deterministic action out of range."
+    value = model.get_value(dummy_single_state)
+    assert value.shape == (1, 1)
+
+    # --- Test with batch input ---
+    batch_size = 4
+    dummy_batch_state = torch.randn(batch_size, config.perception.code_dim)
+
+    actions_batch, log_probs_batch = model.get_action(dummy_batch_state)
+    assert isinstance(actions_batch, torch.Tensor)
+    assert actions_batch.shape == (batch_size,)
+    assert log_probs_batch.shape == (batch_size,)
