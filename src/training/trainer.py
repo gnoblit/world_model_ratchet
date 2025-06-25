@@ -140,7 +140,7 @@ class Trainer:
 
             z_next_predicted = self.world_model(z_current, actions_flat)
             
-            prediction_loss = F.mse_loss(z_next_predicted, z_next_target.detach())
+            prediction_loss = F.mse_loss(z_next_predicted, z_next_target) # .detach() is redundant as it's in no_grad
             
             # --- FIX: Add the commitment loss to the main world model loss. ---
             beta = self.cfg.training.commitment_loss_coef
@@ -169,11 +169,18 @@ class Trainer:
             # We must detach it before reshaping for the A2C update.
             z_seq = z_current.detach().reshape(batch_size, seq_len, -1)
             
-            # --- FIX: Correctly unpack the tuple for last_z_next ---
-            last_next_obs = next_obs_seq[:, -1]
-            last_z_next, _ = self.perception_agent(last_next_obs)
+            # --- OPTIMIZATION: Avoid recomputing last_z_next if possible ---
+            if not teacher_is_frozen:
+                # z_next_target was computed for the world model loss.
+                # We can slice the last state representation from it.
+                indices = torch.arange(batch_size, device=self.device) * seq_len + (seq_len - 1)
+                last_z_next = z_next_target[indices]
+            else:
+                # Otherwise, compute it from scratch
+                last_next_obs = next_obs_seq[:, -1]
+                last_z_next, _ = self.perception_agent(last_next_obs)
+
             last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
-            # -------------------------------------------------------
 
         # Get action logits and state values from the Actor-Critic model
         # We use z_seq (which is detached) to ensure no gradients flow from A2C back to the perception agent
@@ -184,15 +191,13 @@ class Trainer:
         log_probs_seq = dist.log_prob(actions_seq)
         
         # --- Calculate Advantages and Returns ---
+        # OPTIMIZATION: Vectorized advantage and return calculation
         with torch.no_grad():
-            advantages = torch.zeros_like(rewards_seq)
-            for t in reversed(range(seq_len)):
-                mask = 1.0 - dones_seq[:, t].float()
-                next_value = state_values_seq[:, t + 1] if t < seq_len - 1 else last_value
-                delta = rewards_seq[:, t] + self.cfg.training.gamma * next_value * mask - state_values_seq[:, t]
-                advantages[:, t] = delta
-        
-        returns = advantages + state_values_seq.detach()
+            next_values = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+            masks = 1.0 - dones_seq.float()
+            returns = rewards_seq + self.cfg.training.gamma * next_values * masks
+            # Advantages are TD-errors in this case (r_t + gamma*V(s_{t+1}) - V(s_t))
+            advantages = returns - state_values_seq
         
         # --- Calculate Final Losses ---
         actor_loss = -(log_probs_seq * advantages.detach()).mean()
