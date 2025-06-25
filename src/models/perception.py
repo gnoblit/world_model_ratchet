@@ -45,8 +45,7 @@ class VisionEncoder(nn.Module):
                                           Shape: (batch_size, channels, heigh, width)
 
         Returns:
-            torch.Tensor: A batch of flat feature vectors.
-                                 Shape: (batch_size, feature_dim)                                          
+            torch.Tensor: A batch of flat feature vectors. Shape: (batch_size, feature_dim)
         """
         # Pass through feature extractor
         features = self.feature_extractor(obs)
@@ -81,7 +80,7 @@ class SharedCodebook(nn.Module):
         self.num_codes = num_codes
         self.code_dim = code_dim
 
-    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Takes continuous input features and maps them to a sparse combination of codes.
         
@@ -91,9 +90,10 @@ class SharedCodebook(nn.Module):
                                                 Note: feature_dim must equal code_dim.
                                                 
         Returns:
-            A tuple (final_representation, commitment_loss):
+            A tuple (final_representation, commitment_loss, code_entropy):
                 final_representation (torch.Tensor): The final representation `z_t`.
                 commitment_loss (torch.Tensor): The loss term to prevent collapse.
+                code_entropy (torch.Tensor): The entropy of the codebook usage.
         """
         
         if features.shape[-1] != self.code_dim:
@@ -102,7 +102,6 @@ class SharedCodebook(nn.Module):
                 f"codebook dimension ({self.code_dim})"
             )
         
-        # Get all code vectors from the embedding table
         # Shape: (num_codes, code_dim)
         codes = self.embedding.weight
         
@@ -123,8 +122,9 @@ class SharedCodebook(nn.Module):
         final_representation = torch.matmul(weights, codes)
         # Shape: (batch_size, code_dim)
         
+        # --- Calculate Loss Terms ---
+
         # We need the chosen code vectors to calculate the commitment loss.
-        # We can get the "closest" code for each feature vector in the batch.
         # This is a discrete, non-differentiable step, but we use it for a loss term.
         closest_code_indices = torch.argmax(similarity_scores, dim=-1)
         quantized_features = self.embedding(closest_code_indices)
@@ -135,12 +135,20 @@ class SharedCodebook(nn.Module):
         # towards the codes, not the other way around.
         commitment_loss = F.mse_loss(features, quantized_features.detach())
         
+        # We can also add a loss to encourage diverse use of the codebook vectors.
+        # Maximizing the entropy of the average code usage across the batch prevents
+        # the model from collapsing to using only a few codes.
+        avg_code_usage = torch.mean(weights, dim=0) # Average probabilities across batch
+        code_entropy = -torch.sum(avg_code_usage * torch.log(avg_code_usage + 1e-8)) # H(p) = -sum(p*log(p))
+        # We want to maximize entropy, so we will subtract this term from the main loss.
+        # We return it as a positive value to be clear it's an entropy value.
+
         # We also need to allow the gradient to flow back from the final_representation
         # to the encoder. The commitment loss helps the encoder, but the main task
         # gradient still needs to pass through. This is a common trick in VQ-VAEs.
         final_representation = features + (final_representation - features).detach()
 
-        return final_representation, commitment_loss
+        return final_representation, commitment_loss, code_entropy
     
 class PerceptionAgent(nn.Module):
     """
@@ -180,7 +188,7 @@ class PerceptionAgent(nn.Module):
             code_dim=cfg.code_dim,
         )
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         The full forward pass from pixels to structured representation.
         
@@ -189,14 +197,15 @@ class PerceptionAgent(nn.Module):
                                             Shape: (batch_size, channels, height, width)
             
         Returns:
-            A tuple (representation, commitment_loss):
+            A tuple (representation, commitment_loss, code_entropy):
                 representation (torch.Tensor): The final representation `z_t`.
                 commitment_loss (torch.Tensor): The loss from the codebook.
+                code_entropy (torch.Tensor): The entropy of the codebook usage.
         """
 
         # 1. Encode the raw pixes into a continuous feature vector
         features = self.encoder(obs)
         # 2. Map the continuous features to a sparse combination of discrete codes
-        representation, commitment_loss = self.codebook(features)
+        representation, commitment_loss, code_entropy = self.codebook(features)
 
-        return representation, commitment_loss
+        return representation, commitment_loss, code_entropy

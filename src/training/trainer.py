@@ -70,7 +70,7 @@ class Trainer:
             # --- Interaction ---
             obs_batch = self.obs.unsqueeze(0).to(self.device)
             with torch.no_grad():
-                state_representation, _ = self.perception_agent(obs_batch)
+                state_representation, _, _ = self.perception_agent(obs_batch)
                 action, _ = self.actor_critic.get_action(state_representation)
 
             next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -132,20 +132,24 @@ class Trainer:
         if not teacher_is_frozen:
             # --- FIX: The gradients should only be disabled for the target network. ---
             # The main perception agent call needs to compute gradients.
-            z_current, commitment_loss = self.perception_agent(obs_flat)
+            z_current, commitment_loss, code_entropy = self.perception_agent(obs_flat)
 
             with torch.no_grad():
-                z_next_target, _ = self.perception_agent(next_obs_flat)
+                # We only need the representation for the target, not the losses
+                z_next_target, _, _ = self.perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
 
             z_next_predicted = self.world_model(z_current, actions_flat)
             
             prediction_loss = F.mse_loss(z_next_predicted, z_next_target) # .detach() is redundant as it's in no_grad
             
-            # --- FIX: Add the commitment loss to the main world model loss. ---
+            # The total world model loss is a combination of the prediction loss,
+            # the commitment loss (to keep the encoder honest), and an entropy
+            # bonus (to encourage diverse codebook usage).
             beta = self.cfg.training.commitment_loss_coef
-            world_model_loss = prediction_loss + beta * commitment_loss
-            # ---------------------------------------------------------------
+            eta = self.cfg.training.code_usage_loss_coef
+            # We subtract the entropy because we want to maximize it.
+            world_model_loss = prediction_loss + beta * commitment_loss - eta * code_entropy
 
             # Backpropagation for the world model
             self.world_optimizer.zero_grad()
@@ -156,6 +160,7 @@ class Trainer:
             loss_dict['world_model_loss'] = world_model_loss.item()
             loss_dict['prediction_loss'] = prediction_loss.item()
             loss_dict['commitment_loss'] = commitment_loss.item()
+            loss_dict['code_entropy'] = code_entropy.item()
 
         # --- 2. Actor-Critic (A2C) Update ---
         with torch.no_grad():
@@ -163,7 +168,7 @@ class Trainer:
             # If the teacher was frozen, z_current wasn't computed yet in the block above.
             # So we must compute it now.
             if teacher_is_frozen: 
-                z_current, _ = self.perception_agent(obs_flat)
+                z_current, _, _ = self.perception_agent(obs_flat)
             
             # We can reuse z_current if it was already computed, but it will still have gradients.
             # We must detach it before reshaping for the A2C update.
@@ -178,7 +183,7 @@ class Trainer:
             else:
                 # Otherwise, compute it from scratch
                 last_next_obs = next_obs_seq[:, -1]
-                last_z_next, _ = self.perception_agent(last_next_obs)
+                last_z_next, _, _ = self.perception_agent(last_next_obs)
 
             last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 

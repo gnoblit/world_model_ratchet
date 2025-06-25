@@ -74,6 +74,8 @@ class TrainingConfig:
     max_grad_norm: float = 0.5
     # Commitment loss coefficient
     commitment_loss_coef: float = 0.25 # Beta value to weight the commitment loss
+    # Codebook usage loss coefficient to encourage diversity
+    code_usage_loss_coef: float = 0.1
 
 @dataclass
 class ILConfig:
