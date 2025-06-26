@@ -146,13 +146,14 @@ class Trainer:
                 self.total_grad_updates += 1 # Increment gradient update counter
 
                 if self.logger:
-                    # Log these refinement-specific losses against the *current* environment step count.
+                    # --- FIX: Log against total_env_steps for a unified x-axis ---
+                    # Logging against the current total_env_steps allows us to directly correlate
+                    # the teacher's refinement with the student's experience on the same graph.
                     # This creates a "vertical" line of points on the TensorBoard graph, showing
                     # the effect of refinement at that point in experience.
-                    # An alternative would be to log against total_grad_updates, but env_steps is more standard.
-                    for key, value in loss_dict.items(): # Log against total_grad_updates for teacher refinement
+                    for key, value in loss_dict.items():
                         if key in ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']:
-                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_grad_updates)
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_env_steps)
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -185,12 +186,13 @@ class Trainer:
         actions_flat = actions_seq.reshape(batch_size * seq_len)
         
         # --- World Model / Perception Agent Path ---
-        # We re-compute the representation z' from raw pixels using the *current* perception_agent.
-        # This is necessary for the representation learning gradient.
-        z_current_new, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
 
         # --- 1. World Model (JEPA) Update ---
         if not teacher_is_frozen:
+            # --- FIX: Compute representations only when teacher is training to avoid wasted computation ---
+            # These forward passes are expensive and only needed for the world model loss.
+            z_current_new, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
+
             with torch.no_grad():
                 # The prediction target comes from the frozen, momentum-updated target network.
                 # This prevents the model from predicting its own immediate output (representational collapse).
@@ -202,12 +204,12 @@ class Trainer:
             
             prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
             
-            # The total world model loss is a combination of the prediction loss,
-            # the VQ losses (codebook and commitment), and an entropy bonus.
+            # --- FIX: Apply beta coefficient to both VQ loss terms for consistency ---
+            # The total world model loss combines prediction loss, VQ regularization, and an entropy bonus.
+            # The beta coefficient now scales both VQ losses to maintain their relative balance.
             beta = self.cfg.training.commitment_loss_coef
             eta = self.cfg.training.code_usage_loss_coef
-            # We subtract the entropy because we want to maximize it.
-            world_model_loss = prediction_loss + codebook_loss + beta * commitment_loss - eta * code_entropy
+            world_model_loss = prediction_loss + beta * (codebook_loss + commitment_loss) - eta * code_entropy
 
             # Backpropagation for the world model
             self.world_optimizer.zero_grad()

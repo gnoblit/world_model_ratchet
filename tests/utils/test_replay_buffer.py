@@ -114,3 +114,42 @@ def test_clear_buffer():
     assert len(buffer) == 0
     assert len(buffer.valid_buffer) == 0
     assert len(buffer.current_episode['actions']) == 0
+
+def test_eviction_synchronization():
+    """
+    Tests that when an episode is evicted from the main buffer, it is also
+    correctly removed from the valid_buffer to prevent sampling stale data.
+    This specifically tests the case where a short episode is evicted, which
+    was the source of a bug.
+    """
+    config = get_base_config()
+    config.replay_buffer.capacity = 2
+    config.replay_buffer.sequence_length = 20
+    buffer = ReplayBuffer(config.replay_buffer)
+    state_dim = config.perception.code_dim
+
+    # Helper to add an episode of a specific length
+    def add_episode(length, is_terminal=True):
+        for i in range(length):
+            terminal = is_terminal and (i == length - 1)
+            transition = generate_dummy_transition(state_dim=state_dim)
+            buffer.add(*transition[:5], terminal, False, transition[7])
+        return buffer.buffer[-1] # Return the committed episode dict
+
+    # 1. Add a short episode. It should NOT be in valid_buffer.
+    short_episode = add_episode(length=10)
+    assert len(buffer.valid_buffer) == 0
+
+    # 2. Add a long episode. It SHOULD be in valid_buffer.
+    long_episode_1 = add_episode(length=30)
+    assert len(buffer) == 2
+    assert len(buffer.valid_buffer) == 1
+
+    # 3. Add another long episode. This evicts the short_episode.
+    # The key test: `valid_buffer` must not contain stale references.
+    long_episode_2 = add_episode(length=30)
+    assert len(buffer) == 2 # Capacity is 2
+    assert len(buffer.valid_buffer) == 2
+    assert short_episode not in buffer.buffer
+    assert long_episode_1 in buffer.valid_buffer
+    assert long_episode_2 in buffer.valid_buffer

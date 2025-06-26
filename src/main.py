@@ -17,7 +17,10 @@ def main(args):
     # --- Override config for mini-run if specified ---
     if args.mini:
         print("--- RUNNING IN MINI MODE ---")
-        config.training.learning_starts = 500
+        # Set learning_starts to a value smaller than the warmup/student steps
+        # to ensure training actually happens during these short phases.
+        # The original value of 500 prevented any updates in the first 400 steps.
+        config.training.learning_starts = 100
         # For Baseline
         config.training.total_train_steps = 5_000 
         # For IL

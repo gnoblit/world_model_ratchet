@@ -50,17 +50,21 @@ class ReplayBuffer:
       if not self.current_episode['actions']:
           return # Don't commit empty episodes
 
-      # --- Robust Fix for Memory Leak ---
-      # If the main buffer is full, the oldest episode is about to be evicted.
-      # We must ensure that if this evicted episode is also in our `valid_buffer`
-      # (i.e., it was long enough for sampling), it gets removed there too.
-      # The previous check `self.buffer[0] is self.valid_buffer[0]` was too
-      # fragile and failed if the buffer contained a mix of short and long episodes.
-      if len(self.buffer) == self.capacity and self.valid_buffer:
-          # Check if the object about to be evicted from the main buffer
-          # is the same object as the oldest one in the valid buffer.
-          if self.buffer[0] is self.valid_buffer[0]:
-              self.valid_buffer.popleft() # O(1) removal from the left
+      # --- Robust Fix for Stale Episode Sampling (Memory Leak) ---
+      # If the main buffer is full, appending a new episode will cause the oldest
+      # one to be evicted. We must ensure this evicted episode is also removed
+      # from `valid_buffer` to prevent sampling from stale data.
+      if len(self.buffer) == self.capacity:
+          evicted_episode = self.buffer[0]
+          # The `valid_buffer` is a deque, and we might need to remove an element
+          # that is not at the front. This is an O(N) operation, but is critical
+          # for correctness.
+          try:
+              self.valid_buffer.remove(evicted_episode)
+          except ValueError:
+              # This is the expected and common case where the evicted episode was
+              # too short to ever be added to the valid_buffer.
+              pass
               
       # Convert all lists to numpy arrays
       episode_dict = {}
