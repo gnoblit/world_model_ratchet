@@ -68,16 +68,11 @@ class IteratedLearningManager:
             self.trainer.train_for_steps(self.cfg.il.student_steps, teacher_is_frozen=True)
 
             # --- 3. Teacher Refinement Phase ---
-            print("Starting teacher refinement phase...")
-            # a. Collect a new dataset using the converged student policy.
-            #    It's crucial to clear the buffer to only use data from the new policy.
-            print(f"Clearing buffer and collecting {self.cfg.il.teacher_refinement_collect_steps} new steps...")
-            self.trainer.replay_buffer.clear()
-            self.trainer.collect_experience(num_steps=self.cfg.il.teacher_refinement_collect_steps)
-
-            # b. Train the teacher (Perception + WorldModel) on this new data.
-            #    The student is frozen during this phase.
-            print(f"Refining teacher for {self.cfg.il.teacher_refinement_updates} updates...")
+            print("Starting teacher refinement phase...")            
+            # The replay buffer now contains experience collected by the newly trained
+            # student. We will use this data to refine the teacher. The student is
+            # frozen during this phase.
+            print(f"Refining teacher for {self.cfg.il.teacher_refinement_updates} updates using existing buffer data...")
             self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_refinement_updates)
 
         print("\nIterated Learning finished.")

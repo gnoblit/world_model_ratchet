@@ -13,6 +13,7 @@ class CrafterEnvWrapper(gym.Env):
         Args:
             cfg (EnvConfig): The environment configuration object.
         """
+        self.cfg = cfg # Store config for re-initialization on reset
         # Original Crafter env has a distinct API
         self._env = crafter.Env(size=cfg.image_size, seed=cfg.seed)
 
@@ -60,8 +61,10 @@ class CrafterEnvWrapper(gym.Env):
         A tuple (observation, info).
         """
         if seed is not None:
-            # Crafter doesn't support seeding on reset, so this is pure compliance
-            pass
+            # The Crafter environment must be re-initialized to be seeded,
+            # as it does not support seeding on reset. This is the most
+            # reliable way to ensure reproducibility.
+            self._env = crafter.Env(size=self.cfg.image_size, seed=seed)
         obs = self._env.reset()
         info = {} # Info dict is empty on reset
 

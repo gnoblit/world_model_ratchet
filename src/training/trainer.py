@@ -64,36 +64,40 @@ class Trainer:
 
         print("Trainer initialized successfully.")
 
+    def _step_env(self):
+        """Takes a single step in the environment, adds to buffer, and handles episode termination."""
+        # --- Interaction ---
+        obs_batch = self.obs.unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            state_representation, _, _, _ = self.perception_agent(obs_batch)
+            action, _ = self.actor_critic.get_action(state_representation)
+
+        next_obs, reward, terminated, truncated, info = self.env.step(action)
+        self.replay_buffer.add(self.obs, action, reward, next_obs, terminated, truncated)
+        
+        self.obs = next_obs
+        self.episode_reward += reward
+        self.episode_length += 1
+        self.total_steps += 1
+        
+        if terminated or truncated:
+            if self.logger:
+                self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
+                self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
+            self.obs, _ = self.env.reset()
+            self.episode_reward = 0
+            self.episode_length = 0
+
     def collect_experience(self, num_steps: int):
         """Collects experience by interacting with the environment without training."""
         pbar = tqdm(range(num_steps), desc="Collecting Experience")
         for _ in pbar:
-            obs_batch = self.obs.unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                state_representation, _, _ = self.perception_agent(obs_batch)
-                action, _ = self.actor_critic.get_action(state_representation)
-
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
-            self.replay_buffer.add(self.obs, action, reward, next_obs, terminated, truncated)
-            
-            self.obs = next_obs
-            self.episode_reward += reward
-            self.episode_length += 1
-            self.total_steps += 1
-
+            self._step_env()
             pbar.set_postfix({
                 'Reward': f"{self.episode_reward:.2f}", 
                 'Length': self.episode_length,
                 'Total Steps': self.total_steps
             })
-            # Handle episode termination inside the collection loop
-            if terminated or truncated:
-                if self.logger:
-                    self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
-                    self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
-                self.obs, _ = self.env.reset()
-                self.episode_reward = 0
-                self.episode_length = 0
 
     def train_for_steps(self, num_steps: int, teacher_is_frozen: bool = False):
         """
@@ -105,37 +109,13 @@ class Trainer:
         """
         pbar = tqdm(range(num_steps), desc=f"Training (Teacher Frozen: {teacher_is_frozen})")
         for _ in pbar:
-            # --- Interaction ---
-            obs_batch = self.obs.unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                state_representation, _, _ = self.perception_agent(obs_batch)
-                action, _ = self.actor_critic.get_action(state_representation)
-
-            next_obs, reward, terminated, truncated, info = self.env.step(action)
-            self.replay_buffer.add(self.obs, action, reward, next_obs, terminated, truncated)
-            
-            self.obs = next_obs
-            self.episode_reward += reward
-            self.episode_length += 1
-            self.total_steps += 1
-
+            self._step_env()
             pbar.set_postfix({
                 'Reward': f"{self.episode_reward:.2f}", 
                 'Length': self.episode_length,
                 'Total Steps': self.total_steps
             })
             
-            if terminated or truncated:
-                # --- LOGGING EPISODE STATS ---
-                if self.logger:
-                    self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
-                    self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
-
-
-                self.obs, _ = self.env.reset()
-                self.episode_reward = 0
-                self.episode_length = 0
-
             if (self.total_steps > self.cfg.training.learning_starts and 
                 self.total_steps % self.cfg.training.update_every_steps == 0):
                 
@@ -163,6 +143,9 @@ class Trainer:
                     for key, value in loss_dict.items():
                         if key in ['world_model_loss', 'prediction_loss', 'commitment_loss', 'code_entropy']:
                             self.logger.log_scalar(f'teacher_refinement/{key}', value, log_step)
+        
+        # Increment the total steps to reflect the training effort
+        self.total_steps += num_updates
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -194,11 +177,11 @@ class Trainer:
         if not teacher_is_frozen:
             # --- FIX: The gradients should only be disabled for the target network. ---
             # The main perception agent call needs to compute gradients.
-            z_current, commitment_loss, code_entropy = self.perception_agent(obs_flat)
+            z_current, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
 
             with torch.no_grad():
                 # Use the separate, frozen target network to get the prediction target
-                z_next_target, _, _ = self.target_perception_agent(next_obs_flat)
+                z_next_target, _, _, _ = self.target_perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
 
             z_next_predicted = self.world_model(z_current, actions_flat)
@@ -206,12 +189,11 @@ class Trainer:
             prediction_loss = F.mse_loss(z_next_predicted, z_next_target) # .detach() is redundant as it's in no_grad
             
             # The total world model loss is a combination of the prediction loss,
-            # the commitment loss (to keep the encoder honest), and an entropy
-            # bonus (to encourage diverse codebook usage).
+            # the VQ losses (codebook and commitment), and an entropy bonus.
             beta = self.cfg.training.commitment_loss_coef
             eta = self.cfg.training.code_usage_loss_coef
             # We subtract the entropy because we want to maximize it.
-            world_model_loss = prediction_loss + beta * commitment_loss - eta * code_entropy
+            world_model_loss = prediction_loss + codebook_loss + beta * commitment_loss - eta * code_entropy
 
             # Backpropagation for the world model
             self.world_optimizer.zero_grad()
@@ -221,6 +203,7 @@ class Trainer:
             # Log these specific losses
             loss_dict['world_model_loss'] = world_model_loss.item()
             loss_dict['prediction_loss'] = prediction_loss.item()
+            loss_dict['codebook_loss'] = codebook_loss.item()
             loss_dict['commitment_loss'] = commitment_loss.item()
             loss_dict['code_entropy'] = code_entropy.item()
 
@@ -230,20 +213,13 @@ class Trainer:
                 # We always re-calculate the state representation for the actor-critic
                 # using the most up-to-date perception agent. This avoids using a
                 # stale representation if the teacher was just updated.
-                z_current_for_ac, _, _ = self.perception_agent(obs_flat)
+                z_current_for_ac, _, _, _ = self.perception_agent(obs_flat)
                 z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
                 
-                # --- OPTIMIZATION: Avoid recomputing last_z_next if possible ---
-                if not teacher_is_frozen:
-                    # z_next_target was computed for the world model loss.
-                    # We can slice the last state representation from it.
-                    indices = torch.arange(batch_size, device=self.device) * seq_len + (seq_len - 1)
-                    last_z_next = z_next_target[indices]
-                else:
-                    # Otherwise, compute it from scratch
-                    last_next_obs = next_obs_seq[:, -1]
-                    last_z_next, _, _ = self.perception_agent(last_next_obs)
-
+                # We always compute the bootstrap value's state representation from the
+                # online perception agent, as the critic is trained on its outputs.
+                last_next_obs = next_obs_seq[:, -1]
+                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 
             # Get action logits and state values from the Actor-Critic model

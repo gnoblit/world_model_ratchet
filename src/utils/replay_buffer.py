@@ -12,6 +12,8 @@ class ReplayBuffer:
         self.capacity = cfg.capacity # Max number of *episodes* to store
         self.sequence_length = cfg.sequence_length
         self.buffer = deque(maxlen=self.capacity)
+        # --- OPTIMIZATION: Add a separate deque for episodes valid for sampling ---
+        self.valid_buffer = deque(maxlen=self.capacity)
         self.reset_current_episode()
 
     def reset_current_episode(self):
@@ -52,26 +54,24 @@ class ReplayBuffer:
                 episode_dict[key] = np.array(values, dtype=np.bool_)
         
         self.buffer.append(episode_dict)
+        # --- OPTIMIZATION: If the episode is long enough, add it to the valid buffer ---
+        if len(episode_dict['actions']) >= self.sequence_length:
+            self.valid_buffer.append(episode_dict)
+
         self.reset_current_episode()
 
     def sample(self, batch_size: int, device: str) -> dict:
         """Samples a batch of transition sequences."""
-        # It's possible the buffer has episodes, but none are long enough.
-        # First, get a list of episodes that are valid for sampling.
-        valid_episodes = [ep for ep in self.buffer if len(ep['actions']) >= self.sequence_length]
-
-        if not valid_episodes or batch_size == 0:
+        # --- OPTIMIZATION: Sample directly from the pre-filtered valid_buffer ---
+        if not self.valid_buffer or batch_size == 0:
             return None
 
         batch_sequences = []
         # Use a while loop to ensure we collect exactly batch_size valid sequences
         while len(batch_sequences) < batch_size:
-            episode = random.choice(valid_episodes)
+            # random.choice is efficient for deques
+            episode = random.choice(self.valid_buffer)
             episode_len = len(episode['actions'])
-            
-            # This check is now redundant due to pre-filtering but is safe to keep
-            if episode_len < self.sequence_length:
-                continue
 
             start_idx = random.randint(0, episode_len - self.sequence_length)
             end_idx = start_idx + self.sequence_length
@@ -92,3 +92,9 @@ class ReplayBuffer:
     def __len__(self) -> int:
         """Returns the number of episodes currently in the buffer."""
         return len(self.buffer)
+
+    def clear(self):
+        """Clears all episodes from the buffer."""
+        self.buffer.clear()
+        self.valid_buffer.clear()
+        self.reset_current_episode()

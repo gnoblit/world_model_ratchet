@@ -80,7 +80,7 @@ class SharedCodebook(nn.Module):
         self.num_codes = num_codes
         self.code_dim = code_dim
 
-    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Takes continuous input features and maps them to a sparse combination of codes.
         
@@ -90,8 +90,9 @@ class SharedCodebook(nn.Module):
                                                 Note: feature_dim must equal code_dim.
                                                 
         Returns:
-            A tuple (final_representation, commitment_loss, code_entropy):
+            A tuple (final_representation, codebook_loss, commitment_loss, code_entropy):
                 final_representation (torch.Tensor): The final representation `z_t`.
+                codebook_loss (torch.Tensor): The loss term to update the codebook.
                 commitment_loss (torch.Tensor): The loss term to prevent collapse.
                 code_entropy (torch.Tensor): The entropy of the codebook usage.
         """
@@ -121,14 +122,20 @@ class SharedCodebook(nn.Module):
         quantized_features = self.embedding(closest_code_indices)
         
         # --- Calculate Loss Terms ---
+        
+        # 1. Codebook Loss: Encourages the codebook vectors (e_k) to move towards
+        # the encoder's outputs (features). We stop the gradient on the features
+        # so we only update the codebook.
+        codebook_loss = F.mse_loss(quantized_features, features.detach())
 
-        # 1. Commitment Loss: Encourages the encoder's output (features) to be
+        # 2. Commitment Loss: Encourages the encoder's output (features) to be
         # "committed" to the chosen code vector.
         # We stop the gradient on the quantized features so the encoder is pulled
         # towards the codes, not the other way around.
         commitment_loss = F.mse_loss(features, quantized_features.detach())
         
-        # 2. Codebook Usage Loss (Entropy): Encourages the model to use a diverse
+        
+        # 3. Codebook Usage Loss (Entropy): Encourages the model to use a diverse
         # set of codes. We calculate the entropy of the distribution of chosen
         # codes within the batch.
         code_counts = torch.zeros(self.num_codes, device=features.device)
@@ -148,7 +155,7 @@ class SharedCodebook(nn.Module):
         # The gradient from `final_representation` will flow back to `features`.
         final_representation = features + (quantized_features - features).detach()
 
-        return final_representation, commitment_loss, code_entropy
+        return final_representation, codebook_loss, commitment_loss, code_entropy
     
 class PerceptionAgent(nn.Module):
     """
@@ -182,13 +189,14 @@ class PerceptionAgent(nn.Module):
                                 """)
         self.encoder = VisionEncoder(
             feature_dim=cfg.feature_dim,
+            pretrained=cfg.pretrained
         )
         self.codebook = SharedCodebook(
             num_codes=cfg.num_codes,
             code_dim=cfg.code_dim,
         )
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         The full forward pass from pixels to structured representation.
         
@@ -197,8 +205,9 @@ class PerceptionAgent(nn.Module):
                                             Shape: (batch_size, channels, height, width)
             
         Returns:
-            A tuple (representation, commitment_loss, code_entropy):
+            A tuple (representation, codebook_loss, commitment_loss, code_entropy):
                 representation (torch.Tensor): The final representation `z_t`.
+                codebook_loss (torch.Tensor): The loss from the codebook.
                 commitment_loss (torch.Tensor): The loss from the codebook.
                 code_entropy (torch.Tensor): The entropy of the codebook usage.
         """
@@ -206,6 +215,6 @@ class PerceptionAgent(nn.Module):
         # 1. Encode the raw pixes into a continuous feature vector
         features = self.encoder(obs)
         # 2. Map the continuous features to a sparse combination of discrete codes
-        representation, commitment_loss, code_entropy = self.codebook(features)
+        representation, codebook_loss, commitment_loss, code_entropy = self.codebook(features)
 
-        return representation, commitment_loss, code_entropy
+        return representation, codebook_loss, commitment_loss, code_entropy

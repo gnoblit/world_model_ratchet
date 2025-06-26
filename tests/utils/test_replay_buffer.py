@@ -86,3 +86,25 @@ def test_edge_cases():
     assert len(buffer) == 2
     sample = buffer.sample(batch_size=4, device='cpu')
     assert sample is not None
+
+def test_clear_buffer():
+    """Tests that the clear method empties both internal buffers."""
+    config = get_base_config()
+    config.replay_buffer.sequence_length = 10
+    buffer = ReplayBuffer(config.replay_buffer)
+
+    # Add a long episode that should populate both internal deques
+    episode_len = 50
+    for i in range(episode_len):
+        is_terminal = (i == episode_len - 1)
+        obs, action, reward, next_obs, _, _ = generate_dummy_transition()
+        buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+    
+    assert len(buffer) == 1
+    assert len(buffer.valid_buffer) == 1
+    
+    buffer.clear()
+    
+    assert len(buffer) == 0
+    assert len(buffer.valid_buffer) == 0
+    assert len(buffer.current_episode['actions']) == 0

@@ -16,6 +16,8 @@ class PerceptionConfig:
     feature_dim: int = 256
     # The number of discrete codes in our "vocabulary"
     num_codes: int = 512
+    # Whether to use a pretrained VisionEncoder
+    pretrained: bool = False
     # The dimension of each code in the codebook. Must match feature_dim.
     code_dim: int = 256
 
@@ -83,14 +85,12 @@ class TrainingConfig:
 class ILConfig:
     """Configuration for the Iterated Learning process."""
     num_generations: int = 10
-    # Steps for the initial warmup (Generation 0)
-    warmup_steps: int = 50_000
+    # Steps for the initial warmup (Generation 0). Adjusted for 1M total steps.
+    warmup_steps: int = 100_000
     # Steps for the student to learn from a frozen teacher in each generation
-    student_steps: int = 50_000
-    # Steps of experience to collect with the new student policy for teacher refinement
-    teacher_refinement_collect_steps: int = 10_000
+    student_steps: int = 80_000
     # Number of training updates to perform on the teacher model using the collected data
-    teacher_refinement_updates: int = 10_000
+    teacher_refinement_updates: int = 20_000 # Increased to match student training intensity
 
 @dataclass
 class MainConfig:

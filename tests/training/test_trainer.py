@@ -106,7 +106,7 @@ def test_update_models_logic_unfrozen():
     
     # Assert that the dictionary contains all the expected loss keys
     expected_keys = [
-        'world_model_loss', 'prediction_loss', 'commitment_loss', 'code_entropy',
+        'world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy',
         'actor_loss', 'critic_loss', 'entropy_loss', 'total_action_loss'
     ]
     for key in expected_keys:
@@ -158,6 +158,7 @@ def test_update_models_logic_frozen():
     # When frozen, the world model losses should NOT be present
     assert 'world_model_loss' not in loss_dict
     assert 'prediction_loss' not in loss_dict
+    assert 'codebook_loss' not in loss_dict
     assert 'commitment_loss' not in loss_dict
     
     # But the A2C losses should be present
@@ -204,7 +205,7 @@ def test_update_models_logic_student_frozen():
     loss_dict = trainer.update_models(mock_batch, teacher_is_frozen=False, student_is_frozen=True)
 
     # Assert that the world model losses ARE present
-    wm_keys = ['world_model_loss', 'prediction_loss', 'commitment_loss', 'code_entropy']
+    wm_keys = ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']
     for key in wm_keys:
         assert key in loss_dict, f"Loss dictionary is missing key: {key} during teacher refinement"
     
@@ -221,3 +222,33 @@ def test_update_models_logic_student_frozen():
     # Assert that student model was NOT updated
     ac_params_after = list(trainer.actor_critic.parameters())
     assert all(torch.equal(p_before, p_after) for p_before, p_after in zip(ac_params_before, ac_params_after))
+
+def test_train_from_buffer_updates_total_steps():
+    """
+    Tests that train_from_buffer correctly increments the trainer's total_steps
+    to prevent non-monotonic logging.
+    """
+    config = get_base_config()
+    config.training.device = 'cpu'
+    config.run_name = None
+    config.training.batch_size = 4
+    config.replay_buffer.sequence_length = 10
+    
+    trainer = Trainer(config)
+    
+    # Mock the replay buffer to return a valid batch
+    mock_batch = {
+        'obs': torch.rand(4, 10, 3, 64, 64),
+        'actions': torch.randint(0, 17, (4, 10)),
+        'rewards': torch.rand(4, 10),
+        'next_obs': torch.rand(4, 10, 3, 64, 64),
+        'dones': torch.zeros(4, 10, dtype=torch.bool),
+    }
+    trainer.replay_buffer.sample = MagicMock(return_value=mock_batch)
+    
+    initial_steps = 1000
+    num_updates = 50
+    trainer.total_steps = initial_steps
+    trainer.train_from_buffer(num_updates=num_updates)
+    
+    assert trainer.total_steps == initial_steps + num_updates, "train_from_buffer should increment total_steps"

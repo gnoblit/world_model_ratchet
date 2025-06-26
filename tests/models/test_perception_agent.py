@@ -25,13 +25,17 @@ def test_shared_codebook():
     dummy_features = torch.randn(batch_size, config.code_dim)
 
     # --- UPDATED TEST LOGIC ---
-    # Unpack the two return values
-    representation, commitment_loss, code_entropy = codebook(dummy_features)
+    # Unpack the four return values
+    representation, codebook_loss, commitment_loss, code_entropy = codebook(dummy_features)
 
     # Assert the shape of the representation
     expected_repr_shape = (batch_size, config.code_dim)
     assert representation.shape == expected_repr_shape, \
         f"SharedCodebook expected representation shape {expected_repr_shape}, but got {representation.shape}"
+
+    # Assert that the codebook loss is a scalar tensor
+    assert isinstance(codebook_loss, torch.Tensor), "Codebook loss should be a tensor."
+    assert codebook_loss.shape == (), f"Codebook loss should be a scalar, but got shape {codebook_loss.shape}"
 
     # Assert that the commitment loss is a scalar tensor
     assert isinstance(commitment_loss, torch.Tensor), "Commitment loss should be a tensor."
@@ -79,8 +83,8 @@ def test_perception_agent_full_forward_pass():
     dummy_obs_batch = torch.randn(batch_size, 3, *image_size)
     
     # --- UPDATED TEST LOGIC ---
-    # Unpack the two return values
-    representation, commitment_loss, code_entropy = agent(dummy_obs_batch)
+    # Unpack the four return values
+    representation, codebook_loss, commitment_loss, code_entropy = agent(dummy_obs_batch)
 
     # Assert the shape of the representation
     expected_repr_shape = (batch_size, config.perception.code_dim)
@@ -88,6 +92,9 @@ def test_perception_agent_full_forward_pass():
         f"PerceptionAgent expected representation shape {expected_repr_shape}, but got {representation.shape}"
 
     # Assert that the loss terms are scalar tensors
+    assert isinstance(codebook_loss, torch.Tensor), "Codebook loss should be a tensor."
+    assert codebook_loss.shape == (), f"Codebook loss should be a scalar, but got shape {codebook_loss.shape}"
+
     assert isinstance(commitment_loss, torch.Tensor), "Commitment loss should be a tensor."
     assert commitment_loss.shape == (), f"Commitment loss should be a scalar, but got shape {commitment_loss.shape}"
 
