@@ -24,7 +24,7 @@ class PerceptionConfig:
 @dataclass
 class ActionConfig:
     """Configuration for the Action Agent."""    
-    num_actions: int = 17 # Number of discrete actions available in the Crafter environment
+    num_actions: int = 17 # Number of discrete actions in the environment action space
     hidden_dim: int = 256
 
 @dataclass

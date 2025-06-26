@@ -148,8 +148,8 @@ class SharedCodebook(nn.Module):
         # Calculate entropy: H(p) = -sum(p * log(p)). Add epsilon for stability.
         code_entropy = -torch.sum(code_probs * torch.log(code_probs + 1e-8))
 
-        # We subtract this entropy term from the total loss to maximize it, encouraging
-        # the model to use a diverse set of codes.
+        # We subtract this entropy term from the total loss to maximize it, which
+        # encourages the model to use a diverse set of codes.
 
         # We also need to allow the gradient to flow back from the final_representation
         # to the encoder. The commitment loss helps the encoder, but the main task
@@ -176,12 +176,12 @@ class PerceptionAgent(nn.Module):
         """
         super().__init__()
 
-
         if cfg.feature_dim != cfg.code_dim:
-            raise ValueError("""
-                                VisionEncoder's feature dim must match SharedCodebook's code_dim.
-                                Check config.
-                                """)
+            raise ValueError(
+                "VisionEncoder's feature dim must match SharedCodebook's code_dim. "
+                f"Got feature_dim={cfg.feature_dim} and code_dim={cfg.code_dim}."
+            )
+
         self.encoder = VisionEncoder(
             feature_dim=cfg.feature_dim,
             pretrained=cfg.pretrained

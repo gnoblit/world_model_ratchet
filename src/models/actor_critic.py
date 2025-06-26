@@ -73,8 +73,8 @@ class ActorCritic(nn.Module):
         
         Returns:
             A tuple (action, log_prob):
-                - action (int or torch.Tensor): The chosen action. An int for a single
-                  state, a Tensor for a batch of states.
+                - action (int or torch.Tensor): The chosen action. Returns an int if the
+                  input is a single state, or a Tensor for a batch of states.
                 - log_prob (torch.Tensor): The log probability of the chosen action(s).
         """
         # We only need the actor part for action selection
