@@ -176,12 +176,15 @@ def test_update_models_logic_frozen():
     # Assert that the returned object is a dictionary
     assert isinstance(loss_dict, dict)
     
-    # When frozen, the world model losses should NOT be present
+    # When frozen, the world model training losses should NOT be present
     assert 'world_model_loss' not in loss_dict
     assert 'prediction_loss' not in loss_dict
-    assert 'codebook_loss' not in loss_dict
-    assert 'commitment_loss' not in loss_dict
     
+    # But the diagnostic VQ losses (from student's experience) SHOULD be present
+    diag_keys = ['diag_codebook_loss', 'diag_commitment_loss', 'diag_code_entropy']
+    for key in diag_keys:
+        assert key in loss_dict, f"Diagnostic loss dictionary is missing key: {key}"
+
     # But the A2C losses should be present
     a2c_keys = ['actor_loss', 'critic_loss', 'entropy_loss', 'total_action_loss']
     for key in a2c_keys:

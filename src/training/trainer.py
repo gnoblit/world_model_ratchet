@@ -39,9 +39,11 @@ class Trainer:
         for param in self.target_perception_agent.parameters():
             param.requires_grad = False
 
-        # --- Init Optimizers ---
-        world_model_params = list(self.perception_agent.parameters()) + list(self.world_model.parameters())
-        self.world_optimizer = optim.Adam(world_model_params, lr=cfg.training.world_model_lr)
+        # --- Init Optimizers (FIX: Separate optimizers for teacher components) ---
+        # Using separate optimizers allows for different learning rates for the large
+        # perception backbone and the smaller world model head, which is a common practice.
+        self.perception_optimizer = optim.Adam(self.perception_agent.parameters(), lr=cfg.training.perception_model_lr)
+        self.world_optimizer = optim.Adam(self.world_model.parameters(), lr=cfg.training.world_model_lr)
         self.action_optimizer = optim.Adam(self.actor_critic.parameters(), lr=cfg.training.action_model_lr)
 
         self.replay_buffer = ReplayBuffer(cfg.replay_buffer)
@@ -204,22 +206,24 @@ class Trainer:
             
             prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
             
-            # --- FIX: Apply beta coefficient to both VQ loss terms for consistency ---
+            # --- FIX: Revert to standard VQ-VAE loss formulation ---
             # The total world model loss combines prediction loss, VQ regularization, and an entropy bonus.
-            # The beta coefficient now scales both VQ losses to maintain their relative balance.
+            # The `commitment_loss_coef` (beta) scales only the commitment loss, which is standard practice.
             beta = self.cfg.training.commitment_loss_coef
             eta = self.cfg.training.code_usage_loss_coef
-            world_model_loss = prediction_loss + beta * (codebook_loss + commitment_loss) - eta * code_entropy
+            world_model_loss = prediction_loss + codebook_loss + beta * commitment_loss - eta * code_entropy
 
-            # Backpropagation for the world model
+            # --- FIX: Use separate optimizers and add gradient clipping for teacher ---
+            # Backpropagation for both teacher components
+            self.perception_optimizer.zero_grad()
             self.world_optimizer.zero_grad()
             world_model_loss.backward()
 
-            # --- FIX: Add gradient clipping for the teacher models ---
             # Clipping gradients is crucial for stability, especially with unbounded MSE losses.
             torch.nn.utils.clip_grad_norm_(self.perception_agent.parameters(), self.cfg.training.max_grad_norm)
             torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.cfg.training.max_grad_norm)
 
+            self.perception_optimizer.step()
             self.world_optimizer.step()
 
             # Log these specific losses
@@ -253,9 +257,8 @@ class Trainer:
                 # We only need the representation of the final next_obs in each sequence for bootstrapping.
                 # Instead of computing it for the whole sequence, we extract just the last frame.
                 last_next_obs = next_obs_seq[:, -1] # Shape: (batch_size, C, H, W)
-                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
-                last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
-
+                last_z_next_target, _, _, _ = self.target_perception_agent(last_next_obs)
+                last_value = self.actor_critic.get_value(last_z_next_target).squeeze(-1)
             # Get action logits and state values using the STORED state representation
             action_logits_seq, state_values_seq = self.actor_critic(z_seq_stored)
             state_values_seq = state_values_seq.squeeze(-1)
