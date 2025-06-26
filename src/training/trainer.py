@@ -175,12 +175,12 @@ class Trainer:
 
         # --- 1. World Model (JEPA) Update ---
         if not teacher_is_frozen:
-            # --- FIX: The gradients should only be disabled for the target network. ---
-            # The main perception agent call needs to compute gradients.
+            # The online perception agent must compute gradients for the world model update.
             z_current, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
 
             with torch.no_grad():
-                # Use the separate, frozen target network to get the prediction target
+                # The prediction target comes from the frozen, momentum-updated target network.
+                # This prevents the model from predicting its own immediate output (representational collapse).
                 z_next_target, _, _, _ = self.target_perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
 
@@ -210,14 +210,14 @@ class Trainer:
         if not student_is_frozen:
             # --- 2. Actor-Critic (A2C) Update ---
             with torch.no_grad():
-                # We always re-calculate the state representation for the actor-critic
-                # using the most up-to-date perception agent. This avoids using a
-                # stale representation if the teacher was just updated.
+                # Re-calculate the state representation for the A2C update using the
+                # most up-to-date perception agent. This is crucial as the teacher
+                # might have just been updated in this same step.
                 z_current_for_ac, _, _, _ = self.perception_agent(obs_flat)
                 z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
                 
-                # We always compute the bootstrap value's state representation from the
-                # online perception agent, as the critic is trained on its outputs.
+                # The bootstrap value for the last step in the sequence is also computed
+                # using the online network.
                 last_next_obs = next_obs_seq[:, -1]
                 last_z_next, _, _, _ = self.perception_agent(last_next_obs)
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)

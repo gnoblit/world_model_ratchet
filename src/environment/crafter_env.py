@@ -8,7 +8,7 @@ class CrafterEnvWrapper(gym.Env):
 
     def __init__(self, cfg):
         """
-        Initializes teh Crafter environment wrapper.
+        Initializes the Crafter environment wrapper.
         
         Args:
             cfg (EnvConfig): The environment configuration object.

@@ -23,8 +23,8 @@ class PerceptionConfig:
 
 @dataclass
 class ActionConfig:
-    """Configuration for the Action Agent."""
-    num_actions: int = 17 # For Crafter
+    """Configuration for the Action Agent."""    
+    num_actions: int = 17 # Number of discrete actions available in the Crafter environment
     hidden_dim: int = 256
 
 @dataclass
@@ -90,7 +90,7 @@ class ILConfig:
     # Steps for the student to learn from a frozen teacher in each generation
     student_steps: int = 80_000
     # Number of training updates to perform on the teacher model using the collected data
-    teacher_refinement_updates: int = 20_000 # Increased to match student training intensity
+    teacher_refinement_updates: int = 20_000 # Number of gradient updates for the teacher refinement phase
 
 @dataclass
 class MainConfig:

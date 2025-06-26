@@ -24,7 +24,6 @@ def main(args):
         config.il.num_generations = 2
         config.il.warmup_steps = 200
         config.il.student_steps = 200
-        config.il.teacher_refinement_collect_steps = 100
         config.il.teacher_refinement_updates = 100
 
     # --- Set run name based on experiment type ---

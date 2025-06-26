@@ -91,12 +91,14 @@ class SharedCodebook(nn.Module):
                                                 
         Returns:
             A tuple (final_representation, codebook_loss, commitment_loss, code_entropy):
-                final_representation (torch.Tensor): The final representation `z_t`.
-                codebook_loss (torch.Tensor): The loss term to update the codebook.
-                commitment_loss (torch.Tensor): The loss term to prevent collapse.
-                code_entropy (torch.Tensor): The entropy of the codebook usage.
+                - final_representation (torch.Tensor): The final representation `z_t`. Uses a straight-through estimator to allow gradients to flow back to the encoder.
+                - codebook_loss (torch.Tensor): Loss to move codebook vectors towards encoder outputs.
+                - commitment_loss (torch.Tensor): Loss to move encoder outputs towards codebook vectors.
+                - code_entropy (torch.Tensor): Entropy of code usage in the batch, used as a regularization loss to encourage using more of the codebook.
         """
-        
+
+        # Input validation
+
         if features.shape[-1] != self.code_dim:
             raise ValueError(
                 f"Input feature dimension ({features.shape[-1]} must match "
@@ -146,8 +148,8 @@ class SharedCodebook(nn.Module):
         # Calculate entropy: H(p) = -sum(p * log(p)). Add epsilon for stability.
         code_entropy = -torch.sum(code_probs * torch.log(code_probs + 1e-8))
 
-        # We want to maximize entropy, so we will subtract this term from the main loss.
-        # We return it as a positive value to be clear it's an entropy value.
+        # We subtract this entropy term from the total loss to maximize it, encouraging
+        # the model to use a diverse set of codes.
 
         # We also need to allow the gradient to flow back from the final_representation
         # to the encoder. The commitment loss helps the encoder, but the main task
@@ -174,13 +176,6 @@ class PerceptionAgent(nn.Module):
         """
         super().__init__()
 
-        # We will expect the config to have:
-        # cfg.perception.feature_dim
-        # cfg.perception.num_codes
-        # cfg.perception.code_dim
-
-        # Feature dimension of the encoder's output must
-        # match the code dim of the codebook's input/output
 
         if cfg.feature_dim != cfg.code_dim:
             raise ValueError("""
