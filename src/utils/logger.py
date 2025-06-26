@@ -16,7 +16,7 @@ class Logger:
         self.writer = SummaryWriter(log_dir=log_dir)
         print(f"Logger initialized. Logging to: {log_dir}")
 
-    def log_scalar(self, tag: str, value: float, step: int):
+    def log_scalar(self, tag: str, value: float, step: float):
         """
         Logs a scalar value to TensorBoard.
 

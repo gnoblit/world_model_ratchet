@@ -22,7 +22,7 @@ def main(args):
         # The original value of 500 prevented any updates in the first 400 steps.
         config.training.learning_starts = 100
         # For Baseline
-        config.training.total_train_steps = 5_000 
+        config.training.total_train_steps = 600 
         # For IL
         config.il.num_generations = 2
         config.il.warmup_env_steps = 200
@@ -33,7 +33,8 @@ def main(args):
 
     # Get the current date as a string
     current_time = time.time()
-    datestamp = time.strftime('%Y-%m-%d_%H-%M', time.localtime(current_time)).replace("-", "_")
+    datestamp = time.strftime('%Y-%m', time.localtime(current_time)).replace("-", "_")
+    timestamp = time.strftime('%H-%M', time.localtime(current_time)).replace("-", "_")
     # Generate a short, unique hex ID (e.g., 'a1b2c3')
     unique_id = uuid.uuid4().hex[:6]
     # Store
@@ -49,7 +50,7 @@ def main(args):
         base_name = f"{mode}{mini_str}"
     
     # Combine the datestamp and base name for the final run name
-    config.run_name = f"{datestamp}_{base_name}_{unique_id}"
+    config.run_name = f"{datestamp}/{timestamp}_{base_name}_{unique_id}"
 
     # --- Setup Logging and Config Saving ---
     log_dir = None
