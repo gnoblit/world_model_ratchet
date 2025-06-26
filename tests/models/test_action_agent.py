@@ -30,10 +30,11 @@ def test_get_action_and_get_value():
     dummy_single_state = torch.randn(1, config.perception.code_dim)
 
     action, log_prob = model.get_action(dummy_single_state)
-    assert isinstance(action, int)
-    assert 0 <= action < config.action.num_actions
-    # This assertion will now pass
-    assert log_prob.shape == (), f"Expected scalar log_prob, but got shape {log_prob.shape}"
+    # For a single state, action should be a tensor with one element.
+    assert isinstance(action, torch.Tensor)
+    assert action.shape == (1,)
+    assert 0 <= action.item() < config.action.num_actions
+    assert log_prob.shape == (1,), f"Expected log_prob of shape (1,), but got shape {log_prob.shape}"
 
     value = model.get_value(dummy_single_state)
     assert value.shape == (1, 1)

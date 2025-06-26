@@ -65,15 +65,21 @@ class TrainingConfig:
     # The batch size for sampling from the replay buffer
     batch_size: int = 32
 
-    # --- A2C specific hyperparameters ---
+    # --- Actor-Critic (PPO-style) Hyperparameters ---
     # Discount factor for future rewards
     gamma: float = 0.99
     # Coefficient for the critic's value loss
     critic_loss_coef: float = 0.5
     # Coefficient for the entropy bonus to encourage exploration
     entropy_coef: float = 0.01
-    # Gradient clipping
+    # Gradient clipping for actor-critic updates
     max_grad_norm: float = 0.5
+    # Clipping parameter for the PPO-style importance sampling ratio
+    importance_clip_eps: float = 0.2
+    # GAE lambda parameter for advantage estimation
+    gae_lambda: float = 0.95
+
+    # --- World Model (JEPA/VQ) Hyperparameters ---
     # Commitment loss coefficient
     commitment_loss_coef: float = 0.25 # Beta value to weight the commitment loss
     # Codebook usage loss coefficient to encourage diversity

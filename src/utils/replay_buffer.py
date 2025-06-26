@@ -20,20 +20,24 @@ class ReplayBuffer:
   def reset_current_episode(self):
       """Resets the temporary buffers for the current episode."""
       self.current_episode = {
-          'obs': [], 'actions': [], 'rewards': [], 
+          'obs': [], 'actions': [], 'log_probs': [], 'rewards': [], 
           'next_obs': [], 'dones': []
       }
 
-  def add(self, obs, action, reward, next_obs, terminated, truncated):
+  def add(self, obs, action, log_prob, reward, next_obs, terminated, truncated):
       """Adds a single transition to the current episode's temporary lists."""
-      # Note: obs and next_obs from our wrapper are PyTorch tensors.
-      # We convert them to numpy for efficient storage.
-      self.current_episode['obs'].append(obs.cpu().numpy())
-      self.current_episode['actions'].append(action)
-      self.current_episode['rewards'].append(reward)
-      self.current_episode['next_obs'].append(next_obs.cpu().numpy())
-      self.current_episode['dones'].append(terminated or truncated)
+      # Convert float32 CHW tensors back to uint8 HWC numpy arrays for memory efficiency.
+      # The environment wrapper's ToTensor() transform handles the reverse process during sampling.
+      # This saves significant RAM by storing pixels as uint8 instead of float32.
+      obs_uint8 = (obs.cpu().permute(1, 2, 0) * 255).to(torch.uint8).numpy()
+      next_obs_uint8 = (next_obs.cpu().permute(1, 2, 0) * 255).to(torch.uint8).numpy()
 
+      self.current_episode['obs'].append(obs_uint8)
+      self.current_episode['actions'].append(action)
+      self.current_episode['log_probs'].append(log_prob)
+      self.current_episode['rewards'].append(reward)
+      self.current_episode['next_obs'].append(next_obs_uint8)
+      self.current_episode['dones'].append(terminated or truncated)
       if terminated or truncated:
           self.commit_episode()
 
@@ -46,9 +50,12 @@ class ReplayBuffer:
       episode_dict = {}
       for key, values in self.current_episode.items():
           if key in ['obs', 'next_obs']:
-                  episode_dict[key] = np.array(values, dtype=np.float32) # Assuming observations are already scaled to [0,1]
+                  # Store observations as uint8 to save memory
+                  episode_dict[key] = np.array(values, dtype=np.uint8)
           elif key == 'actions':
               episode_dict[key] = np.array(values, dtype=np.int64)
+          elif key == 'log_probs':
+              episode_dict[key] = np.array(values, dtype=np.float32)
           elif key == 'rewards':
               episode_dict[key] = np.array(values, dtype=np.float32)
           elif key == 'dones':
@@ -67,13 +74,12 @@ class ReplayBuffer:
       if not self.valid_buffer or batch_size == 0:
           return None
 
-      batch_sequences = []
-      # Use a while loop to ensure we collect exactly batch_size valid sequences
-      while len(batch_sequences) < batch_size:
-          # random.choice is efficient for deques
-          episode = random.choice(self.valid_buffer)
-          episode_len = len(episode['actions'])
+      # More efficient sampling: sample all episodes at once with replacement
+      sampled_episodes = random.choices(self.valid_buffer, k=batch_size)
 
+      batch_sequences = []
+      for episode in sampled_episodes:
+          episode_len = len(episode['actions'])
           start_idx = random.randint(0, episode_len - self.sequence_length)
           end_idx = start_idx + self.sequence_length
           
@@ -86,8 +92,16 @@ class ReplayBuffer:
       batch = {}
       for key in batch_sequences[0].keys():
           stacked = np.stack([seq[key] for seq in batch_sequences])
-          batch[key] = torch.from_numpy(stacked).to(device)
+          tensor = torch.from_numpy(stacked).to(device)
           
+          # Special handling for observations: convert uint8 to float32 and scale
+          if key in ['obs', 'next_obs']:
+              # The stored format is (B, S, H, W, C) as uint8.
+              # We need to convert to (B, S, C, H, W) as float32 in [0, 1].
+              tensor = tensor.permute(0, 1, 4, 2, 3).float() / 255.0
+
+          batch[key] = tensor
+
       return batch
 
   def __len__(self) -> int:

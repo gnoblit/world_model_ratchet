@@ -19,6 +19,7 @@ test.py
 .vscode/
 *.swp
 *.swo
+.pytest_cache/
 
 # Data and logs
 experiments/

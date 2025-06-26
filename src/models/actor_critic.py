@@ -67,27 +67,26 @@ class ActorCritic(nn.Module):
         Selects an action from the policy (actor) network.
         
         Args:
-            state_representation (torch.Tensor): A single state vector `z_t`.
-                                                 Shape: (1, state_dim).
-            deterministic (bool): If True, take the most likely action.
+            state_representation (torch.Tensor): A batch of state vectors `z_t`.
+                                                 Shape: (batch_size, state_dim).
+            deterministic (bool): If True, take the most likely action for each state.
         
         Returns:
             A tuple (action, log_prob):
-                - action (int or torch.Tensor): The chosen action. Returns an int if the
-                  input is a single state, or a Tensor for a batch of states.
+                - action (torch.Tensor): A tensor of chosen actions. Shape: (batch_size,).
+                  For a single state input, the caller should use `.item()` to extract
+                  the Python integer.
                 - log_prob (torch.Tensor): The log probability of the chosen action(s).
+                                           Shape: (batch_size,).
         """
         # We only need the actor part for action selection
         logits = self.actor(state_representation)
         dist = Categorical(logits=logits)
         
-        action = dist.probs.argmax() if deterministic else dist.sample()
+        action = dist.mode if deterministic else dist.sample()
         log_prob = dist.log_prob(action)
-
-        if state_representation.shape[0] == 1:
-            return action.item(), log_prob.squeeze()
-        else:
-            return action, log_prob
+        
+        return action, log_prob
     
     def get_value(self, state_representation: torch.Tensor) -> torch.Tensor:
         """

@@ -7,11 +7,12 @@ from utils.replay_buffer import ReplayBuffer
 def generate_dummy_transition(image_size=(64, 64)):
     obs = torch.rand(3, *image_size)
     action = np.random.randint(0, 17)
+    log_prob = np.random.randn()
     reward = np.random.rand()
     next_obs = torch.rand(3, *image_size)
     terminated = False
     truncated = False
-    return obs, action, reward, next_obs, terminated, truncated
+    return obs, action, log_prob, reward, next_obs, terminated, truncated
 
 def test_replay_buffer_initialization():
     config = get_base_config()
@@ -26,9 +27,9 @@ def test_add_and_commit_episode():
 
     for i in range(episode_length):
         is_terminal = (i == episode_length - 1)
-        # CORRECTED: Unpack first, then call add.
-        obs, action, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+        # Unpack all values and pass them to add
+        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
     
     assert len(buffer) == 1
     assert len(buffer.current_episode['actions']) == 0
@@ -45,9 +46,9 @@ def test_sampling_logic():
     for _ in range(num_episodes):
         for i in range(episode_len):
             is_terminal = (i == episode_len - 1)
-            # CORRECTED: Unpack first, then call add.
-            obs, action, reward, next_obs, _, _ = generate_dummy_transition()
-            buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+            # Unpack all values and pass them to add
+            obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
+            buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
 
     assert len(buffer) == num_episodes
 
@@ -68,9 +69,9 @@ def test_edge_cases():
     episode_len_short = 10
     for i in range(episode_len_short):
         is_terminal = (i == episode_len_short - 1)
-        # CORRECTED: Unpack first, then call add.
-        obs, action, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+        # Unpack all values and pass them to add
+        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
     
     assert len(buffer) == 1
     assert buffer.sample(batch_size=4, device='cpu') is None
@@ -79,9 +80,9 @@ def test_edge_cases():
     episode_len_long = 60
     for i in range(episode_len_long):
         is_terminal = (i == episode_len_long - 1)
-        # CORRECTED: Unpack first, then call add.
-        obs, action, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+        # Unpack all values and pass them to add
+        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
 
     assert len(buffer) == 2
     sample = buffer.sample(batch_size=4, device='cpu')
@@ -97,8 +98,8 @@ def test_clear_buffer():
     episode_len = 50
     for i in range(episode_len):
         is_terminal = (i == episode_len - 1)
-        obs, action, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, reward, next_obs, terminated=is_terminal, truncated=False)
+        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
     
     assert len(buffer) == 1
     assert len(buffer.valid_buffer) == 1

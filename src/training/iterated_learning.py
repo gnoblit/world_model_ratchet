@@ -52,6 +52,12 @@ class IteratedLearningManager:
         
         print(f"Starting Iterated Learning for {num_generations} generations.")
 
+        # --- Clear Buffer Before Starting ---
+        # Ensure a clean slate for the entire experiment, preventing data leakage
+        # if the manager is ever re-used.
+        print("Clearing replay buffer before new experiment...")
+        self.trainer.replay_buffer.clear()
+
         # --- Initial Warmup (Generation 0) ---
         print("\n--- Running Generation 0 (Warmup) ---")
         self.trainer.train_for_steps(self.cfg.il.warmup_steps, teacher_is_frozen=False)
@@ -62,16 +68,21 @@ class IteratedLearningManager:
             # --- 1. Generational Shift: Spawn a new student ---
             self.spawn_new_student()
 
-            # --- 2. Student Training Phase ---
+            # --- 2. Clear Buffer for New Generation ---
+            # This is critical. We must clear the buffer to ensure the teacher
+            # is refined ONLY on the data from its direct student.
+            print("Clearing replay buffer for the new generation...")
+            self.trainer.replay_buffer.clear()
+
+            # --- 3. Student Training Phase ---
             print(f"Starting student training for {self.cfg.il.student_steps} steps...")
             # The student trains by interacting with the env, but the teacher is frozen.
             self.trainer.train_for_steps(self.cfg.il.student_steps, teacher_is_frozen=True)
 
-            # --- 3. Teacher Refinement Phase ---
+            # --- 4. Teacher Refinement Phase ---
             print("Starting teacher refinement phase...")            
-            # The replay buffer now contains experience collected by the newly trained
-            # student. We will use this data to refine the teacher. The student is
-            # frozen during this phase.
+            # The replay buffer now contains experience collected *only* by the newly
+            # trained student. We use this data to refine the teacher.
             print(f"Refining teacher for {self.cfg.il.teacher_refinement_updates} updates using existing buffer data...")
             self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_refinement_updates)
 

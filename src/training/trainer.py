@@ -70,10 +70,13 @@ class Trainer:
         obs_batch = self.obs.unsqueeze(0).to(self.device)
         with torch.no_grad():
             state_representation, _, _, _ = self.perception_agent(obs_batch)
-            action, _ = self.actor_critic.get_action(state_representation)
+            # Get action and its log probability from the current policy
+            action_tensor, log_prob_tensor = self.actor_critic.get_action(state_representation)
 
+        action = action_tensor.item()
+        log_prob = log_prob_tensor.item()
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        self.replay_buffer.add(self.obs, action, reward, next_obs, terminated, truncated)
+        self.replay_buffer.add(self.obs, action, log_prob, reward, next_obs, terminated, truncated)
         
         self.obs = next_obs
         self.episode_reward += reward
@@ -131,21 +134,20 @@ class Trainer:
     def train_from_buffer(self, num_updates: int):
         """Trains models from the replay buffer without environment interaction."""
         pbar = tqdm(range(num_updates), desc="Refining Teacher from Buffer")
-        for i in range(num_updates):
+        for _ in pbar:
             batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
             if batch is not None:
                 # In this phase, we ONLY train the teacher.
                 loss_dict = self.update_models(batch, teacher_is_frozen=False, student_is_frozen=True)
                 
+                # Increment the global step counter after each update.
+                # This ensures that logging steps are monotonic across all training phases.
+                self.total_steps += 1
+
                 if self.logger:
-                    # Use a unique step for logging to avoid overwriting
-                    log_step = self.total_steps + i
                     for key, value in loss_dict.items():
-                        if key in ['world_model_loss', 'prediction_loss', 'commitment_loss', 'code_entropy']:
-                            self.logger.log_scalar(f'teacher_refinement/{key}', value, log_step)
-        
-        # Increment the total steps to reflect the training effort
-        self.total_steps += num_updates
+                        if key in ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']:
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_steps)
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -164,6 +166,7 @@ class Trainer:
         obs_seq = batch['obs']
         actions_seq = batch['actions']
         rewards_seq = batch['rewards']
+        old_log_probs_seq = batch['log_probs']
         dones_seq = batch['dones']
         next_obs_seq = batch['next_obs']
         batch_size, seq_len, C, H, W = obs_seq.shape
@@ -173,20 +176,31 @@ class Trainer:
         next_obs_flat = next_obs_seq.reshape(batch_size * seq_len, C, H, W)
         actions_flat = actions_seq.reshape(batch_size * seq_len)
 
+        # --- Get State Representations FIRST ---
+        # This is the key change to fix the state representation mismatch.
+        # We get the representation for the *current* observations using the perception
+        # model *before* any updates occur in this step. This representation is
+        # consistent with the `old_log_probs` from the buffer.
+        # Gradients are allowed to flow from this for the world model update.
+        z_current, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
+        
+        # Bug 1 Fix: Get z_next_online using the *same* perception_agent state as z_current,
+        # before any potential teacher update in this step.
+        # This ensures consistency for value bootstrapping.
+        z_next_online, _, _, _ = self.perception_agent(next_obs_flat)
+
         # --- 1. World Model (JEPA) Update ---
         if not teacher_is_frozen:
-            # The online perception agent must compute gradients for the world model update.
-            z_current, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
-
             with torch.no_grad():
                 # The prediction target comes from the frozen, momentum-updated target network.
                 # This prevents the model from predicting its own immediate output (representational collapse).
                 z_next_target, _, _, _ = self.target_perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
 
+            # Use the z_current computed before this block
             z_next_predicted = self.world_model(z_current, actions_flat)
             
-            prediction_loss = F.mse_loss(z_next_predicted, z_next_target) # .detach() is redundant as it's in no_grad
+            prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
             
             # The total world model loss is a combination of the prediction loss,
             # the VQ losses (codebook and commitment), and an entropy bonus.
@@ -209,39 +223,68 @@ class Trainer:
 
         if not student_is_frozen:
             # --- 2. Actor-Critic (A2C) Update ---
+            # Use the state representation calculated *before* the teacher update.
+            # We must detach it so that no gradients flow from the actor-critic
+            # loss back into the perception agent.
+            z_current_for_ac = z_current.detach()
+            z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
+
             with torch.no_grad():
-                # Re-calculate the state representation for the A2C update using the
-                # most up-to-date perception agent. This is crucial as the teacher
-                # might have just been updated in this same step.
-                z_current_for_ac, _, _, _ = self.perception_agent(obs_flat)
-                z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
-                
-                # The bootstrap value for the last step in the sequence is also computed
-                # using the online network.
-                last_next_obs = next_obs_seq[:, -1]
-                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
+                # Bug 1 Fix: Use z_next_online (calculated before teacher update) for last_value.
+                # This ensures consistency between z_seq and the bootstrap value.
+                # last_z_next is the representation of the last next_obs in the sequence.
+                last_z_next = z_next_online.reshape(batch_size, seq_len, -1)[:, -1].detach()
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 
             # Get action logits and state values from the Actor-Critic model
-            # We use z_seq (which is detached) to ensure no gradients flow from A2C back to the perception agent
             action_logits_seq, state_values_seq = self.actor_critic(z_seq)
             state_values_seq = state_values_seq.squeeze(-1)
 
             dist = torch.distributions.Categorical(logits=action_logits_seq)
-            log_probs_seq = dist.log_prob(actions_seq)
+            new_log_probs_seq = dist.log_prob(actions_seq)
             
-            # --- Calculate Advantages and Returns ---
-            # OPTIMIZATION: Vectorized advantage and return calculation
+            # --- Calculate TD Targets and Advantages (GAE) ---
+            # Both calculations are done within no_grad as they serve as fixed targets/baselines.
             with torch.no_grad():
-                next_values = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+                # Calculate next_values for the entire sequence, including the bootstrap value
+                # next_values_for_gae will be (batch_size, seq_len)
+                next_values_for_gae = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+                
                 masks = 1.0 - dones_seq.float()
-                returns = rewards_seq + self.cfg.training.gamma * next_values * masks
-                # Advantages are TD-errors in this case (r_t + gamma*V(s_{t+1}) - V(s_t))
-                advantages = returns - state_values_seq
+
+                # Bug 4 Fix: Rename 'returns' to 'td_targets'
+                # This is the 1-step TD target for the critic loss
+                td_targets = rewards_seq + self.cfg.training.gamma * next_values_for_gae * masks
+                
+                # Bug 3 Fix: Implement GAE for advantages
+                advantages = torch.zeros_like(rewards_seq) # (batch_size, seq_len)
+                last_gae_lam = torch.zeros(batch_size, device=self.device) # (batch_size,)
+
+                for t in reversed(range(seq_len)):
+                    # Calculate 1-step TD error (delta)
+                    delta = rewards_seq[:, t] + self.cfg.training.gamma * next_values_for_gae[:, t] * masks[:, t] - state_values_seq[:, t]
+                    
+                    # GAE formula: A_t = delta_t + gamma * lambda * A_{t+1} * mask_t
+                    # The mask is crucial here to correctly handle episode boundaries
+                    advantages[:, t] = delta + self.cfg.training.gamma * self.cfg.training.gae_lambda * last_gae_lam * masks[:, t]
+                    last_gae_lam = advantages[:, t]
             
             # --- Calculate Final Losses ---
-            actor_loss = -(log_probs_seq * advantages.detach()).mean()
-            critic_loss = F.mse_loss(state_values_seq, returns)
+            # Importance sampling for off-policy correction.
+            # We clip the ratio to stabilize training (PPO-style).
+            eps = self.cfg.training.importance_clip_eps
+            ratio = (new_log_probs_seq - old_log_probs_seq).exp()
+            surr1 = ratio * advantages.detach()
+            
+            # Bug 2: Add comment about old_log_probs staleness
+            # Note: old_log_probs_seq are from the replay buffer and were generated by a policy
+            # acting on a state representation from an older version of the perception_agent.
+            # This is a known trade-off in world-model-based RL where the state representation
+            # itself evolves. The PPO clipping helps mitigate the variance from this mismatch.
+
+            surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages.detach()
+            actor_loss = -torch.min(surr1, surr2).mean()
+            critic_loss = F.mse_loss(state_values_seq, td_targets) # Bug 4: Use td_targets
             entropy_loss = -dist.entropy().mean()
             total_action_loss = (actor_loss + 
                                 self.cfg.training.critic_loss_coef * critic_loss + 

@@ -53,6 +53,8 @@ def test_run_il_loop_orchestration():
     manager.trainer.train_for_steps = MagicMock()
     # Mock the teacher refinement method
     manager.trainer.train_from_buffer = MagicMock()
+    # Mock the replay buffer's clear method to check it's called
+    manager.trainer.replay_buffer.clear = MagicMock()
     
     # Replace the spawn method as well, since we test it separately
     manager.spawn_new_student = MagicMock()
@@ -74,6 +76,11 @@ def test_run_il_loop_orchestration():
     # 3. Check the total number of calls to train_for_steps (warmup + generations)
     assert manager.trainer.train_for_steps.call_count == 1 + config.il.num_generations
 
-    # 4. Check that the teacher is refined from the buffer in each generation
+    # 4. Check that the buffer is cleared. It's called once before the loop
+    #    and then once per generation inside the loop.
+    expected_clear_calls = 1 + config.il.num_generations
+    assert manager.trainer.replay_buffer.clear.call_count == expected_clear_calls
+
+    # 5. Check that the teacher is refined from the buffer in each generation
     manager.trainer.train_from_buffer.assert_called_with(num_updates=config.il.teacher_refinement_updates)
     assert manager.trainer.train_from_buffer.call_count == config.il.num_generations

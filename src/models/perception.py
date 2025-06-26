@@ -137,19 +137,18 @@ class SharedCodebook(nn.Module):
         commitment_loss = F.mse_loss(features, quantized_features.detach())
         
         
-        # 3. Codebook Usage Loss (Entropy): Encourages the model to use a diverse
-        # set of codes. We calculate the entropy of the distribution of chosen
-        # codes within the batch.
-        code_counts = torch.zeros(self.num_codes, device=features.device)
-        # Count occurrences of each code index
-        code_counts.scatter_add_(0, closest_code_indices, torch.ones_like(closest_code_indices, dtype=torch.float))
-        # Calculate probabilities
-        code_probs = code_counts / batch_size
-        # Calculate entropy: H(p) = -sum(p * log(p)). Add epsilon for stability.
-        code_entropy = -torch.sum(code_probs * torch.log(code_probs + 1e-8))
+        # 3. Differentiable Codebook Entropy Loss: To encourage diverse code usage,
+        # we compute the entropy of a "soft" distribution over the codes. This is
+        # differentiable w.r.t. the input features, unlike an entropy based on argmin.
+        soft_probs = F.softmax(-distances, dim=1) # Smaller distances get higher probability
 
-        # We subtract this entropy term from the total loss to maximize it, which
-        # encourages the model to use a diverse set of codes.
+        # Calculate the entropy for each sample's probability distribution over the codes.
+        # Then, average these entropies across the batch. This is generally more stable
+        # than calculating the entropy of the batch's average distribution.
+        per_sample_entropy = -torch.sum(soft_probs * torch.log(soft_probs + 1e-9), dim=1)
+        code_entropy = per_sample_entropy.mean()
+        
+        # We subtract this entropy term from the total loss to maximize it.
 
         # We also need to allow the gradient to flow back from the final_representation
         # to the encoder. The commitment loss helps the encoder, but the main task

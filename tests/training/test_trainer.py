@@ -88,6 +88,7 @@ def test_update_models_logic_unfrozen():
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'actions': torch.randint(0, num_actions, (batch_size, seq_len)).to(device),
+        'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
@@ -140,6 +141,7 @@ def test_update_models_logic_frozen():
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'actions': torch.randint(0, num_actions, (batch_size, seq_len)).to(device),
+        'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
@@ -193,6 +195,7 @@ def test_update_models_logic_student_frozen():
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'actions': torch.randint(0, num_actions, (batch_size, seq_len)).to(device),
+        'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
         'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
@@ -240,6 +243,7 @@ def test_train_from_buffer_updates_total_steps():
     mock_batch = {
         'obs': torch.rand(4, 10, 3, 64, 64),
         'actions': torch.randint(0, 17, (4, 10)),
+        'log_probs': torch.randn(4, 10),
         'rewards': torch.rand(4, 10),
         'next_obs': torch.rand(4, 10, 3, 64, 64),
         'dones': torch.zeros(4, 10, dtype=torch.bool),
