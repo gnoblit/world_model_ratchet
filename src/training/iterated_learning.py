@@ -86,6 +86,12 @@ class IteratedLearningManager:
             print(f"Refining teacher for {self.cfg.il.teacher_grad_updates} grad updates using existing buffer data...")
             self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_grad_updates)
 
+            # --- 5. Save Intermediate Models ---
+            # Save the state of the models at the end of each generation for fault tolerance
+            # and for analyzing the progression of the teacher model.
+            print(f"Saving models for generation {generation}...")
+            self.trainer.save_models(suffix=f"_gen_{generation}")
+
         print("\nIterated Learning finished.")
         # Final cleanup
         self.trainer.close()

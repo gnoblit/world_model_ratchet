@@ -53,6 +53,8 @@ def test_run_il_loop_orchestration():
     manager.trainer.train_for_steps = MagicMock()
     # Mock the teacher refinement method
     manager.trainer.train_from_buffer = MagicMock()
+        # Mock the model saving method
+    manager.trainer.save_models = MagicMock()
     # Mock the replay buffer's clear method to check it's called
     manager.trainer.replay_buffer.clear = MagicMock()
     
@@ -84,3 +86,12 @@ def test_run_il_loop_orchestration():
     # 5. Check that the teacher is refined from the buffer in each generation
     manager.trainer.train_from_buffer.assert_called_with(num_updates=config.il.teacher_grad_updates)
     assert manager.trainer.train_from_buffer.call_count == config.il.num_generations
+
+    # 6. Check that models are saved after each generation AND at the very end.
+    # The total number of saves should be one per generation, plus one final save from trainer.close().
+    assert manager.trainer.save_models.call_count == config.il.num_generations + 1
+    # Check the intermediate saves
+    for i in range(1, config.il.num_generations + 1):
+        manager.trainer.save_models.assert_any_call(suffix=f"_gen_{i}")
+    # Check the final save
+    manager.trainer.save_models.assert_any_call(suffix="_final")

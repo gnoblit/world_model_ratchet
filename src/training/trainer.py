@@ -150,9 +150,9 @@ class Trainer:
                     # This creates a "vertical" line of points on the TensorBoard graph, showing
                     # the effect of refinement at that point in experience.
                     # An alternative would be to log against total_grad_updates, but env_steps is more standard.
-                    for key, value in loss_dict.items():
+                    for key, value in loss_dict.items(): # Log against total_grad_updates for teacher refinement
                         if key in ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']:
-                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_env_steps)
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_grad_updates)
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -173,7 +173,7 @@ class Trainer:
         rewards_seq = batch['rewards']
         old_log_probs_seq = batch['log_probs']
         # Use 'terminateds' for value bootstrapping. 'truncateds' are handled by the mask.
-        terminateds_seq = batch['terminateds']
+        terminateds_seq = batch['terminateds'] 
         # --- FIX: Load the stored state representations from the buffer ---
         z_seq_stored = batch['state_reprs']
         next_obs_seq = batch['next_obs']
@@ -188,7 +188,6 @@ class Trainer:
         # We re-compute the representation z' from raw pixels using the *current* perception_agent.
         # This is necessary for the representation learning gradient.
         z_current_new, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
-        z_next_online, _, _, _ = self.perception_agent(next_obs_flat)
 
         # --- 1. World Model (JEPA) Update ---
         if not teacher_is_frozen:
@@ -225,15 +224,20 @@ class Trainer:
         if not student_is_frozen:
             # --- 2. Actor-Critic (A2C) Update ---
             # --- FIX: Use the STORED state representation `z_seq_stored` for the actor-critic update ---
-            # This `z_seq_stored` is consistent with `old_log_probs_seq` from the buffer.
-            # It is already detached from any graph as it comes from numpy.
+            # To ensure a mathematically correct importance sampling ratio for PPO, both the old
+            # and new log probabilities must be conditioned on the same state representation.
+            # We use `z_seq_stored`, which is the representation `z_old` that was used to generate
+            # the action and `old_log_probs_seq` during data collection. This fixes the invalid
+            # ratio bug and makes use of the previously "dead" `state_reprs` data from the buffer.
 
             with torch.no_grad():
                 # For the bootstrap value, use the *newly computed* representation of the next state.
-                # This is a standard practice and is more accurate as it reflects the latest world understanding.
-                # last_z_next is the representation of the last next_obs in the sequence,
-                # derived from the current perception agent.
-                last_z_next = z_next_online.reshape(batch_size, seq_len, -1)[:, -1].detach()
+                # This is a standard practice and is more accurate as it reflects the latest world understanding.                
+                # --- FIX: Efficiently compute representation for ONLY the last next_obs ---
+                # We only need the representation of the final next_obs in each sequence for bootstrapping.
+                # Instead of computing it for the whole sequence, we extract just the last frame.
+                last_next_obs = next_obs_seq[:, -1] # Shape: (batch_size, C, H, W)
+                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 
             # Get action logits and state values using the STORED state representation
@@ -254,34 +258,34 @@ class Trainer:
                 # This is critical for correct value bootstrapping.
                 masks = 1.0 - terminateds_seq.float()
 
-                # Bug 4 Fix: Rename 'returns' to 'td_targets'
-                # This is the 1-step TD target for the critic loss
-                td_targets = rewards_seq + self.cfg.training.gamma * next_values_for_gae * masks
-                
-                # Bug 3 Fix: Implement GAE for advantages
                 advantages = torch.zeros_like(rewards_seq) # (batch_size, seq_len)
                 last_gae_lam = torch.zeros(batch_size, device=self.device) # (batch_size,)
 
                 for t in reversed(range(seq_len)):
                     # Calculate 1-step TD error (delta)
                     delta = rewards_seq[:, t] + self.cfg.training.gamma * next_values_for_gae[:, t] * masks[:, t] - state_values_seq[:, t]
-                    
+
                     # GAE formula: A_t = delta_t + gamma * lambda * A_{t+1} * mask_t
                     # The mask is crucial here to correctly handle episode boundaries
                     advantages[:, t] = delta + self.cfg.training.gamma * self.cfg.training.gae_lambda * last_gae_lam * masks[:, t]
                     last_gae_lam = advantages[:, t]
-            
-            # --- Advantage Normalization ---
+
+                # Calculate the returns (TD-Lambda targets) for the critic update.
+                # R_t = A_t + V(s_t). This is the target for the value function.
+                # We use the unnormalized advantages for this calculation.
+                returns = advantages + state_values_seq
+
+            # --- Advantage Normalization (for actor update) ---
             # A standard and critical step in PPO to stabilize training. We normalize
-            # the advantages across the entire batch.
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # the advantages for the actor update. The critic uses the unnormalized returns.
+            advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
             # --- Calculate Final Losses ---
             # Importance sampling for off-policy correction.
             # We clip the ratio to stabilize training (PPO-style).
             eps = self.cfg.training.importance_clip_eps
             ratio = (new_log_probs_seq - old_log_probs_seq).exp()
-            surr1 = ratio * advantages.detach()
+            surr1 = ratio * advantages_normalized.detach()
             # The PPO ratio is now mathematically valid:
             # ratio = exp( log(π_new(a|z_stored)) - log(π_old(a|z_stored)) )
 
@@ -289,10 +293,11 @@ class Trainer:
             # acting on a state representation from an older version of the perception_agent.
             # This is a known trade-off in world-model-based RL where the state representation
             # itself evolves. The PPO clipping helps mitigate the variance from this mismatch.
-
-            surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages.detach()
+            surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages_normalized.detach()
             actor_loss = -torch.min(surr1, surr2).mean()
-            critic_loss = F.mse_loss(state_values_seq, td_targets) # Bug 4: Use td_targets
+            # The critic loss uses the GAE-based returns as its target.
+            # We must detach the returns so that we don't backprop through the target.
+            critic_loss = F.mse_loss(state_values_seq, returns.detach())
             entropy_loss = -dist.entropy().mean()
             total_action_loss = (actor_loss + 
                                 self.cfg.training.critic_loss_coef * critic_loss + 
@@ -319,28 +324,37 @@ class Trainer:
 
         return loss_dict
   
-    def save_models(self):
-        """Saves the current state of the models to the experiment directory."""
+    def save_models(self, suffix: str = ""):
+        """
+        Saves the current state of the models to the experiment directory.
+        Args:
+            suffix (str): A suffix to append to the model filenames (e.g., "_gen_1").
+        """
         if not self.log_dir:
             print("No log directory specified. Skipping model save.")
             return
 
+        # Add suffix to filenames if provided, before the extension
+        perception_filename = f"perception_agent{suffix}.pth"
+        actor_critic_filename = f"actor_critic{suffix}.pth"
+        world_model_filename = f"world_model{suffix}.pth"
+
         # Define paths for each model component
-        perception_path = os.path.join(self.log_dir, "perception_agent.pth")
-        actor_critic_path = os.path.join(self.log_dir, "actor_critic.pth")
-        world_model_path = os.path.join(self.log_dir, "world_model.pth")
+        perception_path = os.path.join(self.log_dir, perception_filename)
+        actor_critic_path = os.path.join(self.log_dir, actor_critic_filename)
+        world_model_path = os.path.join(self.log_dir, world_model_filename)
         
         # Save the state dict for each model
         torch.save(self.perception_agent.state_dict(), perception_path)
         torch.save(self.actor_critic.state_dict(), actor_critic_path)
         torch.save(self.world_model.state_dict(), world_model_path)
         
-        print(f"Models saved to {self.log_dir}")
+        print(f"Models saved to {self.log_dir} (suffix: '{suffix}')")
     
     def close(self):
         """A helper method to clean up resources and save models."""
         print("Closing trainer and saving models...")
-        self.save_models() # Call save before closing
+        self.save_models(suffix="_final") # Call save before closing
         self.env.close()
         if self.logger:
             self.logger.close()

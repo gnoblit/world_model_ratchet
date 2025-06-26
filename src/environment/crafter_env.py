@@ -4,13 +4,8 @@ import numpy as np
 import torch
 from torchvision import transforms
 from typing import Tuple, Any, Dict
-from dataclasses import dataclass
 
-# It's good practice to define a config structure.
-@dataclass
-class EnvConfig:
-    image_size: Tuple[int, int] = (64, 64)
-    seed: int = 42
+from configs.base_config import EnvConfig
 
 class CrafterEnvWrapper(gym.Env):
     """

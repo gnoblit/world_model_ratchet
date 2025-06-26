@@ -56,14 +56,12 @@ class ReplayBuffer:
       # (i.e., it was long enough for sampling), it gets removed there too.
       # The previous check `self.buffer[0] is self.valid_buffer[0]` was too
       # fragile and failed if the buffer contained a mix of short and long episodes.
-      if len(self.buffer) == self.capacity:
-          evicted_episode = self.buffer[0]
-          try:
-              self.valid_buffer.remove(evicted_episode) # O(N) but robust
-          except ValueError:
-              # This is expected and fine: the evicted episode was too short to be in valid_buffer.
-              pass
-
+      if len(self.buffer) == self.capacity and self.valid_buffer:
+          # Check if the object about to be evicted from the main buffer
+          # is the same object as the oldest one in the valid buffer.
+          if self.buffer[0] is self.valid_buffer[0]:
+              self.valid_buffer.popleft() # O(1) removal from the left
+              
       # Convert all lists to numpy arrays
       episode_dict = {}
       for key, values in self.current_episode.items():
