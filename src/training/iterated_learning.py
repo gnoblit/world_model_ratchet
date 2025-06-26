@@ -60,7 +60,7 @@ class IteratedLearningManager:
 
         # --- Initial Warmup (Generation 0) ---
         print("\n--- Running Generation 0 (Warmup) ---")
-        self.trainer.train_for_steps(self.cfg.il.warmup_steps, teacher_is_frozen=False)
+        self.trainer.train_for_steps(self.cfg.il.warmup_env_steps, teacher_is_frozen=False)
         
         for generation in range(1, num_generations + 1):
             print(f"\n--- Starting Generation {generation}/{num_generations} ---")
@@ -75,16 +75,16 @@ class IteratedLearningManager:
             self.trainer.replay_buffer.clear()
 
             # --- 3. Student Training Phase ---
-            print(f"Starting student training for {self.cfg.il.student_steps} steps...")
+            print(f"Starting student training for {self.cfg.il.student_env_steps} env steps...")
             # The student trains by interacting with the env, but the teacher is frozen.
-            self.trainer.train_for_steps(self.cfg.il.student_steps, teacher_is_frozen=True)
+            self.trainer.train_for_steps(self.cfg.il.student_env_steps, teacher_is_frozen=True)
 
             # --- 4. Teacher Refinement Phase ---
             print("Starting teacher refinement phase...")            
             # The replay buffer now contains experience collected *only* by the newly
             # trained student. We use this data to refine the teacher.
-            print(f"Refining teacher for {self.cfg.il.teacher_refinement_updates} updates using existing buffer data...")
-            self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_refinement_updates)
+            print(f"Refining teacher for {self.cfg.il.teacher_grad_updates} grad updates using existing buffer data...")
+            self.trainer.train_from_buffer(num_updates=self.cfg.il.teacher_grad_updates)
 
         print("\nIterated Learning finished.")
         # Final cleanup

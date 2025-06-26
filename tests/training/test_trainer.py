@@ -1,6 +1,9 @@
+# tests/training/test_trainer.py
+
 import torch
 import pytest
 import os
+import numpy as np  # <-- ADD THIS LINE
 from unittest.mock import MagicMock
 
 from configs.base_config import get_base_config
@@ -57,17 +60,29 @@ def test_trainer_logging_on_episode_end(temp_log_dir): # Use the new fixture nam
     
     original_step_fn = trainer.env.step
     def mock_step(action):
-        if trainer.total_steps == num_steps - 1:
-            dummy_obs_np = trainer.env.observation_space.sample()
-            dummy_obs_tensor = trainer.env.transform(dummy_obs_np.copy())
+        if trainer.total_env_steps == num_steps - 1:
+            # 1. Create a dummy observation that mimics the *raw* output of the 
+            #    original Crafter environment (HWC format, uint8 dtype).
+            raw_obs_shape = (*trainer.env.cfg.image_size, 3)  # e.g., (64, 64, 3)
+            dummy_raw_obs_np = np.random.randint(0, 256, size=raw_obs_shape, dtype=np.uint8)
+
+            # 2. Now, use the environment's actual transform function. This correctly
+            #    converts our raw (H, W, C) numpy array into a (C, H, W) tensor.
+            #    This ensures the shape is consistent with real steps.
+            dummy_obs_tensor = trainer.env.transform(dummy_raw_obs_np)
+            
             return dummy_obs_tensor, 1.0, True, False, {}
+        
         return original_step_fn(action)
+    
     trainer.env.step = mock_step 
     
-    trainer.train_for_steps(num_steps=num_steps)
+    trainer.train_for_steps(num_env_steps=num_steps)
 
     assert trainer.logger.log_scalar.call_count >= 2
-    trainer.logger.log_scalar.assert_any_call('rollout/episode_length', num_steps, num_steps)
+    trainer.logger.log_scalar.assert_any_call('rollout/episode_length', num_steps, trainer.total_env_steps)
+
+# ... (the rest of the file remains unchanged) ...
 
 def test_update_models_logic_unfrozen():
     """Tests the update_models method when the teacher is NOT frozen."""
@@ -84,6 +99,7 @@ def test_update_models_logic_unfrozen():
     seq_len = config.replay_buffer.sequence_length
     img_shape = config.env.image_size
     num_actions = config.action.num_actions
+    state_dim = config.perception.code_dim
     device = config.training.device
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
@@ -91,7 +107,8 @@ def test_update_models_logic_unfrozen():
         'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
-        'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'terminateds': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'state_reprs': torch.randn(batch_size, seq_len, state_dim).to(device),
     }
 
     wm_params_before = [p.clone() for p in trainer.perception_agent.parameters()]
@@ -137,6 +154,7 @@ def test_update_models_logic_frozen():
     seq_len = config.replay_buffer.sequence_length
     img_shape = config.env.image_size
     num_actions = config.action.num_actions
+    state_dim = config.perception.code_dim
     device = config.training.device
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
@@ -144,7 +162,8 @@ def test_update_models_logic_frozen():
         'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
-        'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'terminateds': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'state_reprs': torch.randn(batch_size, seq_len, state_dim).to(device),
     }
     
     wm_params_before = [p.clone() for p in trainer.perception_agent.parameters()]
@@ -191,6 +210,7 @@ def test_update_models_logic_student_frozen():
     seq_len = config.replay_buffer.sequence_length
     img_shape = config.env.image_size
     num_actions = config.action.num_actions
+    state_dim = config.perception.code_dim
     device = config.training.device
     mock_batch = {
         'obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
@@ -198,7 +218,8 @@ def test_update_models_logic_student_frozen():
         'log_probs': torch.randn(batch_size, seq_len).to(device),
         'rewards': torch.rand(batch_size, seq_len).to(device),
         'next_obs': torch.rand(batch_size, seq_len, 3, *img_shape).to(device),
-        'dones': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'terminateds': torch.randint(0, 2, (batch_size, seq_len), dtype=torch.bool).to(device),
+        'state_reprs': torch.randn(batch_size, seq_len, state_dim).to(device),
     }
     
     wm_params_before = [p.clone() for p in trainer.perception_agent.parameters()]
@@ -228,14 +249,15 @@ def test_update_models_logic_student_frozen():
 
 def test_train_from_buffer_updates_total_steps():
     """
-    Tests that train_from_buffer correctly increments the trainer's total_steps
-    to prevent non-monotonic logging.
+    Tests that train_from_buffer correctly increments the trainer's grad_updates
+    counter but NOT the env_steps counter.
     """
     config = get_base_config()
     config.training.device = 'cpu'
     config.run_name = None
     config.training.batch_size = 4
     config.replay_buffer.sequence_length = 10
+    state_dim = config.perception.code_dim
     
     trainer = Trainer(config)
     
@@ -246,13 +268,16 @@ def test_train_from_buffer_updates_total_steps():
         'log_probs': torch.randn(4, 10),
         'rewards': torch.rand(4, 10),
         'next_obs': torch.rand(4, 10, 3, 64, 64),
-        'dones': torch.zeros(4, 10, dtype=torch.bool),
+        'terminateds': torch.zeros(4, 10, dtype=torch.bool),
+        'state_reprs': torch.randn(4, 10, state_dim),
     }
     trainer.replay_buffer.sample = MagicMock(return_value=mock_batch)
     
     initial_steps = 1000
     num_updates = 50
-    trainer.total_steps = initial_steps
+    trainer.total_env_steps = initial_steps
+    trainer.total_grad_updates = 0
     trainer.train_from_buffer(num_updates=num_updates)
     
-    assert trainer.total_steps == initial_steps + num_updates, "train_from_buffer should increment total_steps"
+    assert trainer.total_env_steps == initial_steps, "train_from_buffer should NOT increment total_env_steps"
+    assert trainer.total_grad_updates == num_updates, "train_from_buffer should increment total_grad_updates"

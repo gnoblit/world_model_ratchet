@@ -67,10 +67,10 @@ def test_run_il_loop_orchestration():
     assert manager.spawn_new_student.call_count == config.il.num_generations
 
     # 1. Check the initial warmup call
-    manager.trainer.train_for_steps.assert_any_call(config.il.warmup_steps, teacher_is_frozen=False)
+    manager.trainer.train_for_steps.assert_any_call(config.il.warmup_env_steps, teacher_is_frozen=False)
 
     # 2. Check the student training calls within the loop
-    student_training_call = call(config.il.student_steps, teacher_is_frozen=True)
+    student_training_call = call(config.il.student_env_steps, teacher_is_frozen=True)
     assert manager.trainer.train_for_steps.call_args_list.count(student_training_call) == config.il.num_generations
 
     # 3. Check the total number of calls to train_for_steps (warmup + generations)
@@ -82,5 +82,5 @@ def test_run_il_loop_orchestration():
     assert manager.trainer.replay_buffer.clear.call_count == expected_clear_calls
 
     # 5. Check that the teacher is refined from the buffer in each generation
-    manager.trainer.train_from_buffer.assert_called_with(num_updates=config.il.teacher_refinement_updates)
+    manager.trainer.train_from_buffer.assert_called_with(num_updates=config.il.teacher_grad_updates)
     assert manager.trainer.train_from_buffer.call_count == config.il.num_generations

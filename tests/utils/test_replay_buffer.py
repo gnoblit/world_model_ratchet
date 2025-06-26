@@ -4,7 +4,7 @@ import numpy as np
 from configs.base_config import get_base_config
 from utils.replay_buffer import ReplayBuffer
 
-def generate_dummy_transition(image_size=(64, 64)):
+def generate_dummy_transition(image_size=(64, 64), state_dim=256):
     obs = torch.rand(3, *image_size)
     action = np.random.randint(0, 17)
     log_prob = np.random.randn()
@@ -12,7 +12,8 @@ def generate_dummy_transition(image_size=(64, 64)):
     next_obs = torch.rand(3, *image_size)
     terminated = False
     truncated = False
-    return obs, action, log_prob, reward, next_obs, terminated, truncated
+    state_repr = torch.randn(state_dim)
+    return obs, action, log_prob, reward, next_obs, terminated, truncated, state_repr
 
 def test_replay_buffer_initialization():
     config = get_base_config()
@@ -24,12 +25,13 @@ def test_add_and_commit_episode():
     config = get_base_config()
     buffer = ReplayBuffer(config.replay_buffer)
     episode_length = 10
+    state_dim = config.perception.code_dim
 
     for i in range(episode_length):
         is_terminal = (i == episode_length - 1)
         # Unpack all values and pass them to add
-        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
+        obs, action, log_prob, reward, next_obs, _, _, state_repr = generate_dummy_transition(state_dim=state_dim)
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False, state_repr)
     
     assert len(buffer) == 1
     assert len(buffer.current_episode['actions']) == 0
@@ -40,6 +42,7 @@ def test_sampling_logic():
     config = get_base_config()
     config.replay_buffer.sequence_length = 10
     buffer = ReplayBuffer(config.replay_buffer)
+    state_dim = config.perception.code_dim
 
     num_episodes = 5
     episode_len = 50
@@ -47,8 +50,8 @@ def test_sampling_logic():
         for i in range(episode_len):
             is_terminal = (i == episode_len - 1)
             # Unpack all values and pass them to add
-            obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
-            buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
+            obs, action, log_prob, reward, next_obs, _, _, state_repr = generate_dummy_transition(state_dim=state_dim)
+            buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False, state_repr)
 
     assert len(buffer) == num_episodes
 
@@ -62,6 +65,7 @@ def test_edge_cases():
     config = get_base_config()
     config.replay_buffer.sequence_length = 50
     buffer = ReplayBuffer(config.replay_buffer)
+    state_dim = config.perception.code_dim
     
     assert buffer.sample(batch_size=4, device='cpu') is None
 
@@ -70,8 +74,8 @@ def test_edge_cases():
     for i in range(episode_len_short):
         is_terminal = (i == episode_len_short - 1)
         # Unpack all values and pass them to add
-        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
+        obs, action, log_prob, reward, next_obs, _, _, state_repr = generate_dummy_transition(state_dim=state_dim)
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False, state_repr)
     
     assert len(buffer) == 1
     assert buffer.sample(batch_size=4, device='cpu') is None
@@ -81,8 +85,8 @@ def test_edge_cases():
     for i in range(episode_len_long):
         is_terminal = (i == episode_len_long - 1)
         # Unpack all values and pass them to add
-        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
+        obs, action, log_prob, reward, next_obs, _, _, state_repr = generate_dummy_transition(state_dim=state_dim)
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False, state_repr)
 
     assert len(buffer) == 2
     sample = buffer.sample(batch_size=4, device='cpu')
@@ -93,13 +97,14 @@ def test_clear_buffer():
     config = get_base_config()
     config.replay_buffer.sequence_length = 10
     buffer = ReplayBuffer(config.replay_buffer)
+    state_dim = config.perception.code_dim
 
     # Add a long episode that should populate both internal deques
     episode_len = 50
     for i in range(episode_len):
         is_terminal = (i == episode_len - 1)
-        obs, action, log_prob, reward, next_obs, _, _ = generate_dummy_transition()
-        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False)
+        obs, action, log_prob, reward, next_obs, _, _, state_repr = generate_dummy_transition(state_dim=state_dim)
+        buffer.add(obs, action, log_prob, reward, next_obs, is_terminal, False, state_repr)
     
     assert len(buffer) == 1
     assert len(buffer.valid_buffer) == 1

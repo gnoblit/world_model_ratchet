@@ -91,12 +91,12 @@ class TrainingConfig:
 class ILConfig:
     """Configuration for the Iterated Learning process."""
     num_generations: int = 10
-    # Steps for the initial warmup (Generation 0). Adjusted for 1M total steps.
-    warmup_steps: int = 100_000
-    # Steps for the student to learn from a frozen teacher in each generation
-    student_steps: int = 80_000
-    # Number of training updates to perform on the teacher model using the collected data
-    teacher_refinement_updates: int = 20_000 # Number of gradient updates for the teacher refinement phase
+    # Environment steps for the initial warmup (Generation 0).
+    warmup_env_steps: int = 100_000
+    # Environment steps for the student to collect data in each generation
+    student_env_steps: int = 80_000
+    # Number of gradient updates to perform on the teacher using collected data
+    teacher_grad_updates: int = 20_000 # Number of gradient updates for the teacher refinement phase
 
 @dataclass
 class MainConfig:

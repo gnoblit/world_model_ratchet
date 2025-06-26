@@ -21,10 +21,10 @@ class ReplayBuffer:
       """Resets the temporary buffers for the current episode."""
       self.current_episode = {
           'obs': [], 'actions': [], 'log_probs': [], 'rewards': [], 
-          'next_obs': [], 'dones': []
+          'next_obs': [], 'terminateds': [], 'truncateds': [], 'state_reprs': []
       }
 
-  def add(self, obs, action, log_prob, reward, next_obs, terminated, truncated):
+  def add(self, obs, action, log_prob, reward, next_obs, terminated, truncated, state_repr):
       """Adds a single transition to the current episode's temporary lists."""
       # Convert float32 CHW tensors back to uint8 HWC numpy arrays for memory efficiency.
       # The environment wrapper's ToTensor() transform handles the reverse process during sampling.
@@ -37,7 +37,11 @@ class ReplayBuffer:
       self.current_episode['log_probs'].append(log_prob)
       self.current_episode['rewards'].append(reward)
       self.current_episode['next_obs'].append(next_obs_uint8)
-      self.current_episode['dones'].append(terminated or truncated)
+      # Store terminated and truncated flags separately to correctly handle
+      # value bootstrapping for truncated episodes.
+      self.current_episode['state_reprs'].append(state_repr.cpu().numpy())
+      self.current_episode['terminateds'].append(terminated)
+      self.current_episode['truncateds'].append(truncated)
       if terminated or truncated:
           self.commit_episode()
 
@@ -45,6 +49,20 @@ class ReplayBuffer:
       """Converts the current episode lists to NumPy arrays and stores them."""
       if not self.current_episode['actions']:
           return # Don't commit empty episodes
+
+      # --- Robust Fix for Memory Leak ---
+      # If the main buffer is full, the oldest episode is about to be evicted.
+      # We must ensure that if this evicted episode is also in our `valid_buffer`
+      # (i.e., it was long enough for sampling), it gets removed there too.
+      # The previous check `self.buffer[0] is self.valid_buffer[0]` was too
+      # fragile and failed if the buffer contained a mix of short and long episodes.
+      if len(self.buffer) == self.capacity:
+          evicted_episode = self.buffer[0]
+          try:
+              self.valid_buffer.remove(evicted_episode) # O(N) but robust
+          except ValueError:
+              # This is expected and fine: the evicted episode was too short to be in valid_buffer.
+              pass
 
       # Convert all lists to numpy arrays
       episode_dict = {}
@@ -56,9 +74,9 @@ class ReplayBuffer:
               episode_dict[key] = np.array(values, dtype=np.int64)
           elif key == 'log_probs':
               episode_dict[key] = np.array(values, dtype=np.float32)
-          elif key == 'rewards':
+          elif key in ['rewards', 'state_reprs']:
               episode_dict[key] = np.array(values, dtype=np.float32)
-          elif key == 'dones':
+          elif key in ['terminateds', 'truncateds']:
               episode_dict[key] = np.array(values, dtype=np.bool_)
       
       self.buffer.append(episode_dict)

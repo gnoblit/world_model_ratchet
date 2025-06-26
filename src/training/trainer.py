@@ -56,7 +56,8 @@ class Trainer:
             self.logger = Logger(self.log_dir)
 
         # --- State Tracking ---
-        self.total_steps = 0
+        self.total_env_steps = 0 # Total environment steps taken
+        self.total_grad_updates = 0 # Total gradient updates performed across all models
         self.episode_reward = 0
         self.episode_length = 0
         # We must init the first observation here
@@ -69,67 +70,70 @@ class Trainer:
         # --- Interaction ---
         obs_batch = self.obs.unsqueeze(0).to(self.device)
         with torch.no_grad():
+            # state_representation is a (1, state_dim) tensor here. Squeeze it for buffer storage.
             state_representation, _, _, _ = self.perception_agent(obs_batch)
+            state_representation_for_buffer = state_representation.squeeze(0)
             # Get action and its log probability from the current policy
             action_tensor, log_prob_tensor = self.actor_critic.get_action(state_representation)
 
         action = action_tensor.item()
         log_prob = log_prob_tensor.item()
         next_obs, reward, terminated, truncated, info = self.env.step(action)
-        self.replay_buffer.add(self.obs, action, log_prob, reward, next_obs, terminated, truncated)
+        self.replay_buffer.add(self.obs, action, log_prob, reward, next_obs, terminated, truncated, state_representation_for_buffer)
         
         self.obs = next_obs
         self.episode_reward += reward
         self.episode_length += 1
-        self.total_steps += 1
+        self.total_env_steps += 1
         
         if terminated or truncated:
             if self.logger:
-                self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_steps)
-                self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_steps)
+                self.logger.log_scalar('rollout/episode_reward', self.episode_reward, self.total_env_steps)
+                self.logger.log_scalar('rollout/episode_length', self.episode_length, self.total_env_steps)
             self.obs, _ = self.env.reset()
             self.episode_reward = 0
             self.episode_length = 0
 
-    def collect_experience(self, num_steps: int):
+    def collect_experience(self, num_env_steps: int):
         """Collects experience by interacting with the environment without training."""
-        pbar = tqdm(range(num_steps), desc="Collecting Experience")
+        pbar = tqdm(range(num_env_steps), desc="Collecting Experience")
         for _ in pbar:
             self._step_env()
             pbar.set_postfix({
                 'Reward': f"{self.episode_reward:.2f}", 
                 'Length': self.episode_length,
-                'Total Steps': self.total_steps
+                'Env Steps': self.total_env_steps
             })
 
-    def train_for_steps(self, num_steps: int, teacher_is_frozen: bool = False):
+    def train_for_steps(self, num_env_steps: int, teacher_is_frozen: bool = False):
         """
-        Runs the training loop for a specific number of steps.
+        Runs the training loop for a specific number of environment steps.
 
         Args:
-            num_steps (int): The number of environment steps to run for.
+            num_env_steps (int): The number of environment steps to run for.
             teacher_is_frozen (bool): If True, freezes the world model (teacher) updates.
         """
-        pbar = tqdm(range(num_steps), desc=f"Training (Teacher Frozen: {teacher_is_frozen})")
+        pbar = tqdm(range(num_env_steps), desc=f"Training (Teacher Frozen: {teacher_is_frozen})")
         for _ in pbar:
             self._step_env()
             pbar.set_postfix({
                 'Reward': f"{self.episode_reward:.2f}", 
                 'Length': self.episode_length,
-                'Total Steps': self.total_steps
+                'Env Steps': self.total_env_steps
             })
             
-            if (self.total_steps > self.cfg.training.learning_starts and 
-                self.total_steps % self.cfg.training.update_every_steps == 0):
+            if (self.total_env_steps > self.cfg.training.learning_starts and 
+                self.total_env_steps % self.cfg.training.update_every_steps == 0):
                 
                 batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
                 if batch is not None:
                     # In this interactive loop, the student is always training.
                     loss_dict = self.update_models(batch, teacher_is_frozen, student_is_frozen=False)
+                    self.total_grad_updates += 1 # Increment gradient update counter
                     
                     if self.logger: # No need to check step count here, it's already periodic
                         for key, value in loss_dict.items():
-                            self.logger.log_scalar(f'train/{key}', value, self.total_steps)
+                            self.logger.log_scalar(f'train/{key}', value, self.total_env_steps)
     
     def train_from_buffer(self, num_updates: int):
         """Trains models from the replay buffer without environment interaction."""
@@ -139,15 +143,16 @@ class Trainer:
             if batch is not None:
                 # In this phase, we ONLY train the teacher.
                 loss_dict = self.update_models(batch, teacher_is_frozen=False, student_is_frozen=True)
-                
-                # Increment the global step counter after each update.
-                # This ensures that logging steps are monotonic across all training phases.
-                self.total_steps += 1
+                self.total_grad_updates += 1 # Increment gradient update counter
 
                 if self.logger:
+                    # Log these refinement-specific losses against the *current* environment step count.
+                    # This creates a "vertical" line of points on the TensorBoard graph, showing
+                    # the effect of refinement at that point in experience.
+                    # An alternative would be to log against total_grad_updates, but env_steps is more standard.
                     for key, value in loss_dict.items():
                         if key in ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']:
-                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_steps)
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_env_steps)
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -167,7 +172,10 @@ class Trainer:
         actions_seq = batch['actions']
         rewards_seq = batch['rewards']
         old_log_probs_seq = batch['log_probs']
-        dones_seq = batch['dones']
+        # Use 'terminateds' for value bootstrapping. 'truncateds' are handled by the mask.
+        terminateds_seq = batch['terminateds']
+        # --- FIX: Load the stored state representations from the buffer ---
+        z_seq_stored = batch['state_reprs']
         next_obs_seq = batch['next_obs']
         batch_size, seq_len, C, H, W = obs_seq.shape
 
@@ -175,18 +183,11 @@ class Trainer:
         obs_flat = obs_seq.reshape(batch_size * seq_len, C, H, W)
         next_obs_flat = next_obs_seq.reshape(batch_size * seq_len, C, H, W)
         actions_flat = actions_seq.reshape(batch_size * seq_len)
-
-        # --- Get State Representations FIRST ---
-        # This is the key change to fix the state representation mismatch.
-        # We get the representation for the *current* observations using the perception
-        # model *before* any updates occur in this step. This representation is
-        # consistent with the `old_log_probs` from the buffer.
-        # Gradients are allowed to flow from this for the world model update.
-        z_current, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
         
-        # Bug 1 Fix: Get z_next_online using the *same* perception_agent state as z_current,
-        # before any potential teacher update in this step.
-        # This ensures consistency for value bootstrapping.
+        # --- World Model / Perception Agent Path ---
+        # We re-compute the representation z' from raw pixels using the *current* perception_agent.
+        # This is necessary for the representation learning gradient.
+        z_current_new, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
         z_next_online, _, _, _ = self.perception_agent(next_obs_flat)
 
         # --- 1. World Model (JEPA) Update ---
@@ -196,9 +197,9 @@ class Trainer:
                 # This prevents the model from predicting its own immediate output (representational collapse).
                 z_next_target, _, _, _ = self.target_perception_agent(next_obs_flat)
             # --------------------------------------------------------------------
-
-            # Use the z_current computed before this block
-            z_next_predicted = self.world_model(z_current, actions_flat)
+            
+            # Predict the next state using the *newly computed* representation z'
+            z_next_predicted = self.world_model(z_current_new, actions_flat)
             
             prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
             
@@ -223,21 +224,20 @@ class Trainer:
 
         if not student_is_frozen:
             # --- 2. Actor-Critic (A2C) Update ---
-            # Use the state representation calculated *before* the teacher update.
-            # We must detach it so that no gradients flow from the actor-critic
-            # loss back into the perception agent.
-            z_current_for_ac = z_current.detach()
-            z_seq = z_current_for_ac.reshape(batch_size, seq_len, -1)
+            # --- FIX: Use the STORED state representation `z_seq_stored` for the actor-critic update ---
+            # This `z_seq_stored` is consistent with `old_log_probs_seq` from the buffer.
+            # It is already detached from any graph as it comes from numpy.
 
             with torch.no_grad():
-                # Bug 1 Fix: Use z_next_online (calculated before teacher update) for last_value.
-                # This ensures consistency between z_seq and the bootstrap value.
-                # last_z_next is the representation of the last next_obs in the sequence.
+                # For the bootstrap value, use the *newly computed* representation of the next state.
+                # This is a standard practice and is more accurate as it reflects the latest world understanding.
+                # last_z_next is the representation of the last next_obs in the sequence,
+                # derived from the current perception agent.
                 last_z_next = z_next_online.reshape(batch_size, seq_len, -1)[:, -1].detach()
                 last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
 
-            # Get action logits and state values from the Actor-Critic model
-            action_logits_seq, state_values_seq = self.actor_critic(z_seq)
+            # Get action logits and state values using the STORED state representation
+            action_logits_seq, state_values_seq = self.actor_critic(z_seq_stored)
             state_values_seq = state_values_seq.squeeze(-1)
 
             dist = torch.distributions.Categorical(logits=action_logits_seq)
@@ -250,7 +250,9 @@ class Trainer:
                 # next_values_for_gae will be (batch_size, seq_len)
                 next_values_for_gae = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
                 
-                masks = 1.0 - dones_seq.float()
+                # The mask should only be applied for true terminal states, not truncated ones.
+                # This is critical for correct value bootstrapping.
+                masks = 1.0 - terminateds_seq.float()
 
                 # Bug 4 Fix: Rename 'returns' to 'td_targets'
                 # This is the 1-step TD target for the critic loss
@@ -269,14 +271,20 @@ class Trainer:
                     advantages[:, t] = delta + self.cfg.training.gamma * self.cfg.training.gae_lambda * last_gae_lam * masks[:, t]
                     last_gae_lam = advantages[:, t]
             
+            # --- Advantage Normalization ---
+            # A standard and critical step in PPO to stabilize training. We normalize
+            # the advantages across the entire batch.
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
             # --- Calculate Final Losses ---
             # Importance sampling for off-policy correction.
             # We clip the ratio to stabilize training (PPO-style).
             eps = self.cfg.training.importance_clip_eps
             ratio = (new_log_probs_seq - old_log_probs_seq).exp()
             surr1 = ratio * advantages.detach()
-            
-            # Bug 2: Add comment about old_log_probs staleness
+            # The PPO ratio is now mathematically valid:
+            # ratio = exp( log(π_new(a|z_stored)) - log(π_old(a|z_stored)) )
+
             # Note: old_log_probs_seq are from the replay buffer and were generated by a policy
             # acting on a state representation from an older version of the perception_agent.
             # This is a known trade-off in world-model-based RL where the state representation
@@ -292,6 +300,9 @@ class Trainer:
 
             # --- Backpropagation for the Actor-Critic ---
             self.action_optimizer.zero_grad()
+            # Crucially, because we used `z_seq_stored` (which has no grad_fn),
+            # this loss will NOT backpropagate into the perception agent, which is correct
+            # for the actor-critic update.
             total_action_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
             self.action_optimizer.step()

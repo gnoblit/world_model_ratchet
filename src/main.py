@@ -22,9 +22,9 @@ def main(args):
         config.training.total_train_steps = 5_000 
         # For IL
         config.il.num_generations = 2
-        config.il.warmup_steps = 200
-        config.il.student_steps = 200
-        config.il.teacher_refinement_updates = 100
+        config.il.warmup_env_steps = 200
+        config.il.student_env_steps = 200
+        config.il.teacher_grad_updates = 100
 
     # --- Set run name based on experiment type ---
 
@@ -60,7 +60,7 @@ def main(args):
         print(f"--- Starting Baseline Experiment: {config.run_name} ---")
         trainer = Trainer(config)
         trainer.train_for_steps(
-            num_steps=config.training.total_train_steps, 
+            num_env_steps=config.training.total_train_steps, 
             teacher_is_frozen=False
         )
         trainer.close()
