@@ -156,3 +156,20 @@ def test_eviction_synchronization():
     assert not any(e is short_episode for e in buffer.buffer)
     assert any(e is long_episode_1 for e in buffer.valid_buffer)
     assert any(e is long_episode_2 for e in buffer.valid_buffer)
+
+    # --- FIX: Add the critical, previously missing test case ---
+    # 4. Add a third long episode. This should evict long_episode_1.
+    # This tests that an episode present in BOTH deques is correctly removed.
+    long_episode_3 = add_episode(length=30)
+    assert len(buffer) == 2
+    assert len(buffer.valid_buffer) == 2
+    
+    # Check that long_episode_1 was correctly evicted from BOTH deques.
+    assert not any(e is long_episode_1 for e in buffer.buffer)
+    assert not any(e is long_episode_1 for e in buffer.valid_buffer)
+
+    # Check that the correct episodes remain.
+    assert any(e is long_episode_2 for e in buffer.buffer)
+    assert any(e is long_episode_2 for e in buffer.valid_buffer)
+    assert any(e is long_episode_3 for e in buffer.buffer)
+    assert any(e is long_episode_3 for e in buffer.valid_buffer)

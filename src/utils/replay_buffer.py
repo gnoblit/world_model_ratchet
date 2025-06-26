@@ -54,19 +54,13 @@ class ReplayBuffer:
       # If the main buffer is full, appending a new episode will cause the oldest
       # one to be evicted. We must ensure this evicted episode is also removed
       # from `valid_buffer` to prevent sampling from stale data.
-      if len(self.buffer) == self.capacity:
-          evicted_episode = self.buffer[0]
-          # We must remove by identity ('is') rather than equality ('==') because
-          # comparing dictionaries of numpy arrays with '==' is ambiguous and
-          # raises a ValueError if array shapes don't match. We iterate through
-          # the valid_buffer to find the object with the same identity.
-          index_to_remove = -1
-          for i, ep in enumerate(self.valid_buffer):
-              if ep is evicted_episode:
-                  index_to_remove = i
-                  break
-          if index_to_remove != -1:
-              del self.valid_buffer[index_to_remove]
+      if len(self.buffer) == self.capacity and self.valid_buffer:
+          # --- FIX: Replace O(N) linear scan with O(1) check ---
+          # Because `valid_buffer` is an ordered subsequence of `buffer`, if the
+          # oldest episode in the main buffer is valid, it must also be the
+          # oldest in the valid buffer. This avoids a slow, O(N) linear scan.
+          if self.buffer[0] is self.valid_buffer[0]:
+              self.valid_buffer.popleft() # O(1) removal from the left
               
       # Convert all lists to numpy arrays
       episode_dict = {}

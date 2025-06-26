@@ -140,7 +140,7 @@ class Trainer:
     def train_from_buffer(self, num_updates: int):
         """Trains models from the replay buffer without environment interaction."""
         pbar = tqdm(range(num_updates), desc="Refining Teacher from Buffer")
-        for _ in pbar:
+        for i in pbar:
             batch = self.replay_buffer.sample(self.cfg.training.batch_size, self.device)
             if batch is not None:
                 # In this phase, we ONLY train the teacher.
@@ -148,14 +148,14 @@ class Trainer:
                 self.total_grad_updates += 1 # Increment gradient update counter
 
                 if self.logger:
-                    # --- FIX: Log against total_env_steps for a unified x-axis ---
-                    # Logging against the current total_env_steps allows us to directly correlate
-                    # the teacher's refinement with the student's experience on the same graph.
-                    # This creates a "vertical" line of points on the TensorBoard graph, showing
-                    # the effect of refinement at that point in experience.
+                    # --- FIX: Log against fractional env steps for better visualization ---
+                    # To visualize the trend during refinement without creating a separate x-axis,
+                    # we log against a fractional step count. This plots the refinement progress
+                    # within a single step on the main timeline, e.g., between step 100000 and 100001.
+                    log_step = self.total_env_steps + (i / num_updates)
                     for key, value in loss_dict.items():
                         if key in ['world_model_loss', 'prediction_loss', 'codebook_loss', 'commitment_loss', 'code_entropy']:
-                            self.logger.log_scalar(f'teacher_refinement/{key}', value, self.total_env_steps)
+                            self.logger.log_scalar(f'teacher_refinement/{key}', value, log_step)
 
     @torch.no_grad()
     def _update_target_network(self):
@@ -257,8 +257,8 @@ class Trainer:
                 # We only need the representation of the final next_obs in each sequence for bootstrapping.
                 # Instead of computing it for the whole sequence, we extract just the last frame.
                 last_next_obs = next_obs_seq[:, -1] # Shape: (batch_size, C, H, W)
-                last_z_next_target, _, _, _ = self.target_perception_agent(last_next_obs)
-                last_value = self.actor_critic.get_value(last_z_next_target).squeeze(-1)
+                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
+                last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
             # Get action logits and state values using the STORED state representation
             action_logits_seq, state_values_seq = self.actor_critic(z_seq_stored)
             state_values_seq = state_values_seq.squeeze(-1)
