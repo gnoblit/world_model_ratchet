@@ -80,7 +80,7 @@ class SharedCodebook(nn.Module):
         self.num_codes = num_codes
         self.code_dim = code_dim
 
-    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, features: torch.Tensor, compute_losses: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Takes continuous input features and maps them to a sparse combination of codes.
         
@@ -88,6 +88,7 @@ class SharedCodebook(nn.Module):
             features (torch.Tensor): A batch of continuous feature vectors.
                                                 Shape: (batch_size, feature_dim).
                                                 Note: feature_dim must equal code_dim.
+            compute_losses (bool): If False, skips loss calculations for performance.
                                                 
         Returns:
             A tuple (final_representation, codebook_loss, commitment_loss, code_entropy):
@@ -123,30 +124,32 @@ class SharedCodebook(nn.Module):
         # The quantized representation is the selected codebook vector
         quantized_features = self.embedding(closest_code_indices)
         
-        # --- Calculate Loss Terms ---
-        
-        # 1. Codebook Loss: Encourages the codebook vectors (e_k) to move towards
-        # the encoder's outputs (features). We stop the gradient on the features
-        # so we only update the codebook.
-        codebook_loss = F.mse_loss(quantized_features, features.detach())
+        codebook_loss, commitment_loss, code_entropy = None, None, None
+        if compute_losses:
+            # --- Calculate Loss Terms ---
+            
+            # 1. Codebook Loss: Encourages the codebook vectors (e_k) to move towards
+            # the encoder's outputs (features). We stop the gradient on the features
+            # so we only update the codebook.
+            codebook_loss = F.mse_loss(quantized_features, features.detach())
 
-        # 2. Commitment Loss: Encourages the encoder's output (features) to be
-        # "committed" to the chosen code vector.
-        # We stop the gradient on the quantized features so the encoder is pulled
-        # towards the codes, not the other way around.
-        commitment_loss = F.mse_loss(features, quantized_features.detach())
-        
-        
-        # 3. Differentiable Codebook Entropy Loss: To encourage diverse code usage,
-        # we compute the entropy of a "soft" distribution over the codes. This is
-        # differentiable w.r.t. the input features, unlike an entropy based on argmin.
-        soft_probs = F.softmax(-distances, dim=1) # Smaller distances get higher probability
+            # 2. Commitment Loss: Encourages the encoder's output (features) to be
+            # "committed" to the chosen code vector.
+            # We stop the gradient on the quantized features so the encoder is pulled
+            # towards the codes, not the other way around.
+            commitment_loss = F.mse_loss(features, quantized_features.detach())
+            
+            
+            # 3. Differentiable Codebook Entropy Loss: To encourage diverse code usage,
+            # we compute the entropy of a "soft" distribution over the codes. This is
+            # differentiable w.r.t. the input features, unlike an entropy based on argmin.
+            soft_probs = F.softmax(-distances, dim=1) # Smaller distances get higher probability
 
-        # Calculate the entropy for each sample's probability distribution over the codes.
-        # Then, average these entropies across the batch. This is generally more stable
-        # than calculating the entropy of the batch's average distribution.
-        per_sample_entropy = -torch.sum(soft_probs * torch.log(soft_probs + 1e-9), dim=1)
-        code_entropy = per_sample_entropy.mean()
+            # Calculate the entropy for each sample's probability distribution over the codes.
+            # Then, average these entropies across the batch. This is generally more stable
+            # than calculating the entropy of the batch's average distribution.
+            per_sample_entropy = -torch.sum(soft_probs * torch.log(soft_probs + 1e-9), dim=1)
+            code_entropy = per_sample_entropy.mean()
         
         # We subtract this entropy term from the total loss to maximize it.
 
@@ -190,13 +193,14 @@ class PerceptionAgent(nn.Module):
             code_dim=cfg.code_dim,
         )
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor, compute_losses: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         The full forward pass from pixels to structured representation.
         
         Args:
             obs (torch.Tensor): A batch of image observations.
                                             Shape: (batch_size, channels, height, width)
+            compute_losses (bool): If False, skips VQ loss calculations for performance.
             
         Returns:
             A tuple (representation, codebook_loss, commitment_loss, code_entropy):
@@ -209,6 +213,6 @@ class PerceptionAgent(nn.Module):
         # 1. Encode the raw pixes into a continuous feature vector
         features = self.encoder(obs)
         # 2. Map the continuous features to a sparse combination of discrete codes
-        representation, codebook_loss, commitment_loss, code_entropy = self.codebook(features)
+        representation, codebook_loss, commitment_loss, code_entropy = self.codebook(features, compute_losses=compute_losses)
 
         return representation, codebook_loss, commitment_loss, code_entropy

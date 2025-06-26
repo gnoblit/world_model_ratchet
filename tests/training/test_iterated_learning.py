@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import MagicMock, call
+import torch
+from unittest.mock import MagicMock, call, patch
 
 from configs.base_config import get_base_config
 from training.iterated_learning import IteratedLearningManager
@@ -18,22 +19,37 @@ def test_il_manager_initialization():
 
 def test_spawn_new_student_logic():
     """Tests that the spawn_new_student method correctly replaces the student and optimizer."""
-    config = get_base_config()
-    config.training.device = 'cpu'
-    config.run_name = None
+    # We use a patch to prevent the real, slow torch.compile from running.
+    # We just want to check if it was called.
+    with patch('torch.compile') as mock_compile:
+        config = get_base_config()
+        config.training.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        config.run_name = None
 
-    manager = IteratedLearningManager(config)
-    
-    # Get the original student and optimizer IDs to check they are replaced
-    original_student_id = id(manager.trainer.actor_critic)
-    original_optimizer_id = id(manager.trainer.action_optimizer)
-    
-    # Call the method to spawn a new student
-    manager.spawn_new_student()
-    
-    # Assert that the objects have been replaced with new ones
-    assert id(manager.trainer.actor_critic) != original_student_id
-    assert id(manager.trainer.action_optimizer) != original_optimizer_id
+        # --- Test Case 1: Compilation is OFF ---
+        config.training.use_torch_compile = False
+        manager = IteratedLearningManager(config)
+        original_student_id = id(manager.trainer.actor_critic)
+        original_optimizer_id = id(manager.trainer.action_optimizer)
+        manager.spawn_new_student()
+        assert id(manager.trainer.actor_critic) != original_student_id
+        assert id(manager.trainer.action_optimizer) != original_optimizer_id
+        mock_compile.assert_not_called() # Should not be called when disabled
+
+        mock_compile.reset_mock()
+
+        # --- Test Case 2: Compilation is ON ---
+        config.training.use_torch_compile = True
+        manager = IteratedLearningManager(config)
+        original_student_id = id(manager.trainer.actor_critic)
+        original_optimizer_id = id(manager.trainer.action_optimizer)
+        manager.spawn_new_student()
+        assert id(manager.trainer.actor_critic) != original_student_id
+        assert id(manager.trainer.action_optimizer) != original_optimizer_id
+        if config.training.device == 'cuda':
+            mock_compile.assert_called_once() # Should be called when enabled on CUDA
+        else:
+            mock_compile.assert_not_called() # Should not be called on CPU
 
 def test_run_il_loop_orchestration():
     """

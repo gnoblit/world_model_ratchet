@@ -50,17 +50,16 @@ class ReplayBuffer:
       if not self.current_episode['actions']:
           return # Don't commit empty episodes
 
-      # --- Robust Fix for Stale Episode Sampling (Memory Leak) ---
+      # --- CRITICAL BUG FIX: Robust eviction synchronization ---
       # If the main buffer is full, appending a new episode will cause the oldest
-      # one to be evicted. We must ensure this evicted episode is also removed
-      # from `valid_buffer` to prevent sampling from stale data.
-      if len(self.buffer) == self.capacity and self.valid_buffer:
-          # --- FIX: Replace O(N) linear scan with O(1) check ---
-          # Because `valid_buffer` is an ordered subsequence of `buffer`, if the
-          # oldest episode in the main buffer is valid, it must also be the
-          # oldest in the valid buffer. This avoids a slow, O(N) linear scan.
-          if self.buffer[0] is self.valid_buffer[0]:
-              self.valid_buffer.popleft() # O(1) removal from the left
+      # one to be evicted. We must get a reference to it *before* it's evicted
+      # so we can safely remove it from `valid_buffer` if it exists there.
+      # The previous logic was flawed as it only checked the first element of
+      # `valid_buffer`, leading to dangling pointers if a short episode was
+      # evicted from the main buffer.
+      evicted_episode = None
+      if len(self.buffer) == self.capacity:
+          evicted_episode = self.buffer[0]
               
       # Convert all lists to numpy arrays
       episode_dict = {}
@@ -77,8 +76,20 @@ class ReplayBuffer:
           elif key in ['terminateds', 'truncateds']:
               episode_dict[key] = np.array(values, dtype=np.bool_)
       
+      # This append operation is what actually evicts the oldest episode if capacity is reached.
       self.buffer.append(episode_dict)
-      # --- OPTIMIZATION: If the episode is long enough, add it to the valid buffer ---
+
+      # Now, synchronize the valid_buffer.
+      # 1. If an episode was evicted, remove it from valid_buffer if it was present.
+      # We must iterate and check for identity (`is`) because `in` and `remove` use
+      # `==`, which is ambiguous for dicts of numpy arrays and can cause crashes.
+      if evicted_episode:
+          for i, ep in enumerate(self.valid_buffer):
+              if ep is evicted_episode:
+                  del self.valid_buffer[i]
+                  break # Found and removed, can stop searching.
+
+      # 2. Add the newly committed episode to valid_buffer if it's long enough.
       if len(episode_dict['actions']) >= self.sequence_length:
           self.valid_buffer.append(episode_dict)
 

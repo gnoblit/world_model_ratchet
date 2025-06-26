@@ -31,6 +31,11 @@ class IteratedLearningManager:
         new_student = ActorCritic(state_dim=state_dim, num_actions=num_actions, 
                                   cfg=self.cfg.action).to(self.trainer.device)
 
+        # --- Compile the new student if torch.compile is enabled ---
+        # This is crucial to maintain performance consistency across generations.
+        if self.cfg.training.use_torch_compile and self.trainer.device == 'cuda':
+            print("Compiling new student model...")
+            new_student = torch.compile(new_student, mode="reduce-overhead")
         
         # Replace the old student in the trainer with the new one
         self.trainer.actor_critic = new_student

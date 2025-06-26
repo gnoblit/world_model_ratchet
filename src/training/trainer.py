@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
+import time # Added: Missing import for time.time()
 import copy
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -33,7 +34,21 @@ class Trainer:
         self.world_model = WorldModel(state_dim=state_dim, num_actions=num_actions, cfg=cfg.world_model).to(self.device)
         self.actor_critic = ActorCritic(state_dim=state_dim, num_actions=num_actions, cfg=cfg.action).to(self.device)
 
+        # --- Compile models with torch.compile for a significant speedup ---
+        # This is a major performance boost in PyTorch 2.0+. It JIT-compiles the model
+        # graph into optimized kernels.
+        if cfg.training.use_torch_compile and self.device == 'cuda':
+            print("Compiling models with torch.compile...")
+            # Using 'reduce-overhead' mode is a good balance for dynamic shapes.
+            # 'max-autotune' is more aggressive but can have a long warmup.
+            self.perception_agent = torch.compile(self.perception_agent, mode="reduce-overhead")
+            self.world_model = torch.compile(self.world_model, mode="reduce-overhead")
+            self.actor_critic = torch.compile(self.actor_critic, mode="reduce-overhead")
+            print("Models compiled successfully.")
+
         # --- Create a separate, momentum-updated target perception agent for JEPA ---
+        # CRITICAL FIX: Deepcopy *after* potential torch.compile.
+        # This ensures the target network is also a compiled module if compilation is enabled.
         self.target_perception_agent = copy.deepcopy(self.perception_agent).to(self.device)
         # Freeze the target network; we will update it manually via Polyak averaging
         for param in self.target_perception_agent.parameters():
@@ -45,6 +60,10 @@ class Trainer:
         self.perception_optimizer = optim.Adam(self.perception_agent.parameters(), lr=cfg.training.perception_model_lr)
         self.world_optimizer = optim.Adam(self.world_model.parameters(), lr=cfg.training.world_model_lr)
         self.action_optimizer = optim.Adam(self.actor_critic.parameters(), lr=cfg.training.action_model_lr)
+
+        # --- Mixed Precision Scaler ---
+        # If using cuda, GradScaler helps prevent underflow with fp16 gradients.
+        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.device == 'cuda'))
 
         self.replay_buffer = ReplayBuffer(cfg.replay_buffer)
         
@@ -163,193 +182,172 @@ class Trainer:
         tau = self.cfg.training.target_update_rate
         for param, target_param in zip(self.perception_agent.parameters(), self.target_perception_agent.parameters()):
             target_param.data.copy_(tau * target_param.data + (1.0 - tau) * param.data)
-
+    
     def update_models(self, batch: dict, teacher_is_frozen: bool, student_is_frozen: bool = False):
         """
         Performs a single update step on the models using a batch of data.
+        This method now uses `torch.cuda.amp.autocast` for mixed-precision training
+        and a `GradScaler` for safe backpropagation. The forward passes are performed
+        in the `autocast` context, and the backward passes and optimizer steps are
+        handled outside with the scaler.
         """
         loss_dict = {}
+        update_start_time = time.time() # Add this line for timing
+        world_model_loss, total_action_loss = None, None
 
-        # Get data from the batch once at the top
-        obs_seq = batch['obs']
-        actions_seq = batch['actions']
-        rewards_seq = batch['rewards']
-        old_log_probs_seq = batch['log_probs']
-        # Use 'terminateds' for value bootstrapping. 'truncateds' are handled by the mask.
-        terminateds_seq = batch['terminateds'] 
-        # --- FIX: Load the stored state representations from the buffer ---
-        z_seq_stored = batch['state_reprs']
-        next_obs_seq = batch['next_obs']
-        batch_size, seq_len, C, H, W = obs_seq.shape
+        # Use autocast for the forward passes to enable mixed precision.
+        # All tensor operations within this block are automatically cast to fp16 on CUDA devices.
+        with torch.cuda.amp.autocast(enabled=(self.device == 'cuda')):
+            # Get data from the batch once at the top
+            obs_seq = batch['obs']
+            actions_seq = batch['actions']
+            rewards_seq = batch['rewards']
+            old_log_probs_seq = batch['log_probs']
+            terminateds_seq = batch['terminateds'] 
+            z_seq_stored = batch['state_reprs']
+            next_obs_seq = batch['next_obs']
+            batch_size, seq_len, C, H, W = obs_seq.shape
 
-        # Reshape all sequences into flat batches for efficient processing
-        obs_flat = obs_seq.reshape(batch_size * seq_len, C, H, W)
-        next_obs_flat = next_obs_seq.reshape(batch_size * seq_len, C, H, W)
-        actions_flat = actions_seq.reshape(batch_size * seq_len)
-        
-        # --- World Model / Perception Agent Path ---
-        # --- FIX: Always run perception model for diagnostics ---
-        # We run this forward pass even when the teacher is frozen to get diagnostic
-        # metrics (e.g., codebook usage) on the states the student is visiting.
-        z_current_new, codebook_loss, commitment_loss, code_entropy = self.perception_agent(obs_flat)
+            # --- VRAM FIX: Process sequences step-by-step instead of flattening ---
+            z_next_target_list, z_next_predicted_list = [], []
+            codebook_loss_list, commitment_loss_list, code_entropy_list = [], [], []
 
-        # --- 1. World Model (JEPA) Update ---
-        if not teacher_is_frozen:
-            with torch.no_grad():
-                # The prediction target comes from the frozen, momentum-updated target network.
-                # This prevents the model from predicting its own immediate output (representational collapse).
-                z_next_target, _, _, _ = self.target_perception_agent(next_obs_flat)
-            # --------------------------------------------------------------------
-            
-            # Predict the next state using the *newly computed* representation z'
-            z_next_predicted = self.world_model(z_current_new, actions_flat)
-            
-            prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
-            
-            # --- FIX: Revert to standard VQ-VAE loss formulation ---
-            # The total world model loss combines prediction loss, VQ regularization, and an entropy bonus.
-            # The `commitment_loss_coef` (beta) scales only the commitment loss, which is standard practice.
-            beta = self.cfg.training.commitment_loss_coef
-            eta = self.cfg.training.code_usage_loss_coef
-            world_model_loss = prediction_loss + codebook_loss + beta * commitment_loss - eta * code_entropy
+            # --- World Model and VQ Loss Calculation (only if teacher is training) ---
+            if not teacher_is_frozen:
+                for t in range(seq_len):
+                    # --- CRITICAL FIX: Use stored state representations for world model ---
+                    # The world model must learn the dynamics of the same representation space
+                    # that the actor-critic uses (z_seq_stored).
+                    z_t_stored = z_seq_stored[:, t]
+                    actions_t = actions_seq[:, t]
+                    z_next_predicted_t = self.world_model(z_t_stored, actions_t)
+                    z_next_predicted_list.append(z_next_predicted_t)
 
-            # --- FIX: Use separate optimizers and add gradient clipping for teacher ---
-            # Backpropagation for both teacher components
-            self.perception_optimizer.zero_grad()
-            self.world_optimizer.zero_grad()
-            world_model_loss.backward()
+                    # The VQ losses are still needed to train the perception agent itself.
+                    # We compute them here but the representation output is not used for the WM/AC.
+                    _, cb_loss_t, cmt_loss_t, entr_t = self.perception_agent(obs_seq[:, t], compute_losses=True)
+                    codebook_loss_list.append(cb_loss_t)
+                    commitment_loss_list.append(cmt_loss_t)
+                    code_entropy_list.append(entr_t)
 
-            # Clipping gradients is crucial for stability, especially with unbounded MSE losses.
-            torch.nn.utils.clip_grad_norm_(self.perception_agent.parameters(), self.cfg.training.max_grad_norm)
-            torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.cfg.training.max_grad_norm)
-
-            self.perception_optimizer.step()
-            self.world_optimizer.step()
-
-            # Log these specific losses
-            loss_dict['world_model_loss'] = world_model_loss.item()
-            loss_dict['prediction_loss'] = prediction_loss.item()
-            loss_dict['codebook_loss'] = codebook_loss.item()
-            loss_dict['commitment_loss'] = commitment_loss.item()
-            loss_dict['code_entropy'] = code_entropy.item()
-        else: # teacher_is_frozen == True
-            # --- FIX: Log diagnostic metrics during student-only training ---
-            # We are not training the teacher, but logging these VQ metrics provides
-            # valuable insight into the representations the student is encountering.
-            # We use a 'diag_' prefix to distinguish them in logs.
-            loss_dict['diag_codebook_loss'] = codebook_loss.item()
-            loss_dict['diag_commitment_loss'] = commitment_loss.item()
-            loss_dict['diag_code_entropy'] = code_entropy.item()
-
-        if not student_is_frozen:
-            # --- 2. Actor-Critic (A2C) Update ---
-            # --- FIX: Use the STORED state representation `z_seq_stored` for the actor-critic update ---
-            # To ensure a mathematically correct importance sampling ratio for PPO, both the old
-            # and new log probabilities must be conditioned on the same state representation.
-            # We use `z_seq_stored`, which is the representation `z_old` that was used to generate
-            # the action and `old_log_probs_seq` during data collection. This fixes the invalid
-            # ratio bug and makes use of the previously "dead" `state_reprs` data from the buffer.
-
-            with torch.no_grad():
-                # For the bootstrap value, use the *newly computed* representation of the next state.
-                # This is a standard practice and is more accurate as it reflects the latest world understanding.                
-                # --- FIX: Efficiently compute representation for ONLY the last next_obs ---
-                # We only need the representation of the final next_obs in each sequence for bootstrapping.
-                # Instead of computing it for the whole sequence, we extract just the last frame.
-                last_next_obs = next_obs_seq[:, -1] # Shape: (batch_size, C, H, W)
-                last_z_next, _, _, _ = self.perception_agent(last_next_obs)
-                last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
-            # Get action logits and state values using the STORED state representation
-            action_logits_seq, state_values_seq = self.actor_critic(z_seq_stored)
-            state_values_seq = state_values_seq.squeeze(-1)
-
-            dist = torch.distributions.Categorical(logits=action_logits_seq)
-            new_log_probs_seq = dist.log_prob(actions_seq)
-            
-            # --- Calculate TD Targets and Advantages (GAE) ---
-            # Both calculations are done within no_grad as they serve as fixed targets/baselines.
-            with torch.no_grad():
-                # Calculate next_values for the entire sequence, including the bootstrap value
-                # next_values_for_gae will be (batch_size, seq_len)
-                next_values_for_gae = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+                    # The target for the world model is the representation of the next observation.
+                    with torch.no_grad():
+                        z_next_target_t, _, _, _ = self.target_perception_agent(next_obs_seq[:, t], compute_losses=False)
+                    z_next_target_list.append(z_next_target_t)
+                            
+            # --- 1. World Model (JEPA) Loss Calculation ---
+            if not teacher_is_frozen:
+                codebook_loss = torch.stack(codebook_loss_list).mean()
+                commitment_loss = torch.stack(commitment_loss_list).mean()
+                code_entropy = torch.stack(code_entropy_list).mean()
+                z_next_predicted = torch.stack(z_next_predicted_list, dim=1)
+                z_next_target = torch.stack(z_next_target_list, dim=1)
+                prediction_loss = F.mse_loss(z_next_predicted, z_next_target)
                 
-                # The mask should only be applied for true terminal states, not truncated ones.
-                # This is critical for correct value bootstrapping.
-                masks = 1.0 - terminateds_seq.float()
+                beta = self.cfg.training.commitment_loss_coef
+                eta = self.cfg.training.code_usage_loss_coef
+                world_model_loss = prediction_loss + codebook_loss + beta * commitment_loss - eta * code_entropy
 
-                advantages = torch.zeros_like(rewards_seq) # (batch_size, seq_len)
-                last_gae_lam = torch.zeros(batch_size, device=self.device) # (batch_size,)
+                loss_dict['world_model_loss'] = world_model_loss.item()
+                loss_dict['prediction_loss'] = prediction_loss.item()
+                loss_dict['codebook_loss'] = codebook_loss.item()
+                loss_dict['commitment_loss'] = commitment_loss.item()
+                loss_dict['code_entropy'] = code_entropy.item()
 
-                for t in reversed(range(seq_len)):
-                    # Calculate 1-step TD error (delta)
-                    delta = rewards_seq[:, t] + self.cfg.training.gamma * next_values_for_gae[:, t] * masks[:, t] - state_values_seq[:, t]
+            # --- 2. Actor-Critic (A2C) Loss Calculation ---
+            if not student_is_frozen:
+                with torch.no_grad():
+                    last_next_obs = next_obs_seq[:, -1]
+                    last_z_next, _, _, _ = self.perception_agent(last_next_obs)
+                    last_value = self.actor_critic.get_value(last_z_next).squeeze(-1)
+                
+                # --- CRITICAL BUG FIX: Use the stored state representations from the buffer ---
+                # This ensures the PPO importance sampling ratio is mathematically valid, as
+                # both old and new log probabilities are conditioned on the same state input.
+                action_logits_seq, state_values_seq = self.actor_critic(z_seq_stored)
+                state_values_seq = state_values_seq.squeeze(-1)
+                dist = torch.distributions.Categorical(logits=action_logits_seq)
+                new_log_probs_seq = dist.log_prob(actions_seq)
+                
+                with torch.no_grad():
+                    next_values_for_gae = torch.cat((state_values_seq[:, 1:], last_value.unsqueeze(-1)), dim=1)
+                    masks = 1.0 - terminateds_seq.float()
+                    advantages = torch.zeros_like(rewards_seq)
+                    last_gae_lam = torch.zeros(batch_size, device=self.device)
+                    for t in reversed(range(seq_len)):
+                        delta = rewards_seq[:, t] + self.cfg.training.gamma * next_values_for_gae[:, t] * masks[:, t] - state_values_seq[:, t]
+                        advantages[:, t] = delta + self.cfg.training.gamma * self.cfg.training.gae_lambda * last_gae_lam * masks[:, t]
+                        last_gae_lam = advantages[:, t]
+                    returns = advantages + state_values_seq
 
-                    # GAE formula: A_t = delta_t + gamma * lambda * A_{t+1} * mask_t
-                    # The mask is crucial here to correctly handle episode boundaries
-                    advantages[:, t] = delta + self.cfg.training.gamma * self.cfg.training.gae_lambda * last_gae_lam * masks[:, t]
-                    last_gae_lam = advantages[:, t]
+                advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                # Calculate the returns (TD-Lambda targets) for the critic update.
-                # R_t = A_t + V(s_t). This is the target for the value function.
-                # We use the unnormalized advantages for this calculation.
-                returns = advantages + state_values_seq
+                eps = self.cfg.training.importance_clip_eps
+                ratio = (new_log_probs_seq - old_log_probs_seq).exp()
+                surr1 = ratio * advantages_normalized.detach()
+                surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages_normalized.detach()
+                actor_loss = -torch.min(surr1, surr2).mean()
+                critic_loss = F.mse_loss(state_values_seq, returns.detach())
+                entropy_loss = -dist.entropy().mean()
+                total_action_loss = (actor_loss + 
+                                    self.cfg.training.critic_loss_coef * critic_loss + 
+                                    self.cfg.training.entropy_coef * entropy_loss)
 
-            # --- Advantage Normalization (for actor update) ---
-            # A standard and critical step in PPO to stabilize training. We normalize
-            # the advantages for the actor update. The critic uses the unnormalized returns.
-            advantages_normalized = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-            # --- Calculate Final Losses ---
-            # Importance sampling for off-policy correction.
-            # We clip the ratio to stabilize training (PPO-style).
-            eps = self.cfg.training.importance_clip_eps
-            ratio = (new_log_probs_seq - old_log_probs_seq).exp()
-            surr1 = ratio * advantages_normalized.detach()
-            # The PPO ratio is now mathematically valid:
-            # ratio = exp( log(π_new(a|z_stored)) - log(π_old(a|z_stored)) )
-            
-            # --- FIX: Clarify the methodological challenge of PPO with non-stationary representations ---
-            # The PPO update is applied correctly w.r.t. the stored state representation `z_seq_stored`.
-            # However, a core challenge in this architecture is that the "state" itself (the output of
-            # the perception_agent) is non-stationary. The teacher model evolves, causing the
-            # state representation to drift over time.
-            # This violates a core assumption of PPO, which assumes a stationary MDP.
-            # Using `z_seq_stored` maintains a mathematically valid importance sampling ratio,
-            # but the policy is optimizing for a potentially outdated representation space.
-            # The alternative (using the newest `z`) would invalidate the ratio.
-            # This is a fundamental research problem. The PPO clipping mechanism serves as a
-            # critical safeguard to bound the policy update and mitigate instability from this drift.
-            surr2 = torch.clamp(ratio, 1.0 - eps, 1.0 + eps) * advantages_normalized.detach()
-            actor_loss = -torch.min(surr1, surr2).mean()
-            # The critic loss uses the GAE-based returns as its target.
-            # We must detach the returns so that we don't backprop through the target.
-            critic_loss = F.mse_loss(state_values_seq, returns.detach())
-            entropy_loss = -dist.entropy().mean()
-            total_action_loss = (actor_loss + 
-                                self.cfg.training.critic_loss_coef * critic_loss + 
-                                self.cfg.training.entropy_coef * entropy_loss)
-
-            # --- Backpropagation for the Actor-Critic ---
-            self.action_optimizer.zero_grad()
-            # Crucially, because we used `z_seq_stored` (which has no grad_fn),
-            # this loss will NOT backpropagate into the perception agent, which is correct
-            # for the actor-critic update.
-            total_action_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
-            self.action_optimizer.step()
-
-            # Log A2C losses
-            loss_dict['actor_loss'] = actor_loss.item()
-            loss_dict['critic_loss'] = critic_loss.item()
-            loss_dict['entropy_loss'] = entropy_loss.item()
-            loss_dict['total_action_loss'] = total_action_loss.item()
+                loss_dict['actor_loss'] = actor_loss.item()
+                loss_dict['critic_loss'] = critic_loss.item()
+                loss_dict['entropy_loss'] = entropy_loss.item()
+                loss_dict['total_action_loss'] = total_action_loss.item()
         
+        # --- Backpropagation and Optimizer Steps (outside autocast) ---
+        # We use the GradScaler to prevent underflow of fp16 gradients.
+        # We combine losses before the backward pass to handle shared graph components correctly.
+        combined_loss = 0
+        if not teacher_is_frozen and world_model_loss is not None:
+            combined_loss += world_model_loss
+
+        if not student_is_frozen and total_action_loss is not None:
+            combined_loss += total_action_loss
+
+        # Only perform backprop and update if there's a loss to optimize
+        if isinstance(combined_loss, torch.Tensor):
+            # Zero-out all gradients first
+            self.perception_optimizer.zero_grad(set_to_none=True)
+            self.world_optimizer.zero_grad(set_to_none=True)
+            self.action_optimizer.zero_grad(set_to_none=True)
+
+            # Scale the combined loss and perform a single backward pass
+            self.scaler.scale(combined_loss).backward()
+
+            # Unscale and clip gradients only for optimizers that will be stepped
+            if not teacher_is_frozen:
+                self.scaler.unscale_(self.perception_optimizer)
+                self.scaler.unscale_(self.world_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.perception_agent.parameters(), self.cfg.training.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self.world_model.parameters(), self.cfg.training.max_grad_norm)
+            if not student_is_frozen:
+                self.scaler.unscale_(self.action_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.cfg.training.max_grad_norm)
+
+            # Step the optimizers for the models that are not frozen
+            if not teacher_is_frozen:
+                self.scaler.step(self.perception_optimizer)
+                self.scaler.step(self.world_optimizer)
+            if not student_is_frozen:
+                self.scaler.step(self.action_optimizer)
+        
+        # Update the scaler once after all optimizer steps for this iteration
+        self.scaler.update()
+
         # After the optimizer steps, update the target network if the teacher is training
         if not teacher_is_frozen:
             self._update_target_network()
 
+        # Log the time taken for the update
+        update_duration = time.time() - update_start_time
+        loss_dict['update_duration_ms'] = update_duration * 1000 # Milliseconds
+
         return loss_dict
-  
+
     def save_models(self, suffix: str = ""):
         """
         Saves the current state of the models to the experiment directory.

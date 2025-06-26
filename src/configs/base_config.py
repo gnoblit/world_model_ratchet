@@ -49,6 +49,9 @@ class TrainingConfig:
     # default_factory allows us to run code to determine the default value
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
+    # Whether to use torch.compile for a ~20-30% speedup. Requires PyTorch 2.0+.
+    use_torch_compile: bool = True
+
     # Learning rates for the optimizers
     # A smaller LR for the large vision backbone is common practice.
     perception_model_lr: float = 3e-5
