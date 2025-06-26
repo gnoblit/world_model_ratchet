@@ -56,15 +56,17 @@ class ReplayBuffer:
       # from `valid_buffer` to prevent sampling from stale data.
       if len(self.buffer) == self.capacity:
           evicted_episode = self.buffer[0]
-          # The `valid_buffer` is a deque, and we might need to remove an element
-          # that is not at the front. This is an O(N) operation, but is critical
-          # for correctness.
-          try:
-              self.valid_buffer.remove(evicted_episode)
-          except ValueError:
-              # This is the expected and common case where the evicted episode was
-              # too short to ever be added to the valid_buffer.
-              pass
+          # We must remove by identity ('is') rather than equality ('==') because
+          # comparing dictionaries of numpy arrays with '==' is ambiguous and
+          # raises a ValueError if array shapes don't match. We iterate through
+          # the valid_buffer to find the object with the same identity.
+          index_to_remove = -1
+          for i, ep in enumerate(self.valid_buffer):
+              if ep is evicted_episode:
+                  index_to_remove = i
+                  break
+          if index_to_remove != -1:
+              del self.valid_buffer[index_to_remove]
               
       # Convert all lists to numpy arrays
       episode_dict = {}

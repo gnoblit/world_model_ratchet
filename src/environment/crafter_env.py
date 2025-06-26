@@ -99,10 +99,10 @@ class CrafterEnvWrapper(gym.Env):
         # Re-create the environment. This is slow but required by Crafter.
         self._env = self._create_env(seed=reset_seed)
 
-        # The crafter.Env constructor calls reset() internally. However, as shown
-        # by the test failures, calling render() immediately after is not safe
-        # as the player object may not be initialized. A subsequent call to
-        # reset() is required to get the initial observation and guarantee state.
+        # The crafter.Env constructor calls reset() internally. However, this does
+        # not guarantee the player object is ready for rendering. A subsequent
+        # call to reset() is required to get the initial observation and ensure
+        # a valid state.
         obs = self._env.reset()
         info = {} 
 

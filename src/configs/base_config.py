@@ -50,6 +50,8 @@ class TrainingConfig:
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
     # Learning rates for the optimizers
+    # A smaller LR for the large vision backbone is common practice.
+    perception_model_lr: float = 3e-5
     world_model_lr: float = 1e-4
     action_model_lr: float = 3e-4
     

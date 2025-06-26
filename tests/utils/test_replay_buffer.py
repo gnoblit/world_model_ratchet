@@ -150,6 +150,9 @@ def test_eviction_synchronization():
     long_episode_2 = add_episode(length=30)
     assert len(buffer) == 2 # Capacity is 2
     assert len(buffer.valid_buffer) == 2
-    assert short_episode not in buffer.buffer
-    assert long_episode_1 in buffer.valid_buffer
-    assert long_episode_2 in buffer.valid_buffer
+    # We must check for the *identity* of the episode object, not equality.
+    # Using `in` (which uses `==`) on dicts of numpy arrays is ambiguous
+    # and raises a ValueError if shapes mismatch or are non-scalar.
+    assert not any(e is short_episode for e in buffer.buffer)
+    assert any(e is long_episode_1 for e in buffer.valid_buffer)
+    assert any(e is long_episode_2 for e in buffer.valid_buffer)
